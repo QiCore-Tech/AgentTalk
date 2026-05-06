@@ -8,13 +8,20 @@ import httpx
 import typer
 import uvicorn
 
+from agenttalk.config import AgentBinding, AgentTalkConfig, load_config, save_config, upsert_binding
+from agenttalk.hub.client import HubClient
 from agenttalk.hub.app import create_app
+from agenttalk.hub.models import ReceiveMode
 from agenttalk.hub.settings import HubSettings, default_database_path
+from agenttalk.relay import AgentTalkRelay
+from agenttalk.tmux import TmuxClient
 
 
 app = typer.Typer(help="AgentTalk CLI.")
 hub_app = typer.Typer(help="Run and manage the AgentTalk Hub.")
+daemon_app = typer.Typer(help="Run the local AgentTalk relay.")
 app.add_typer(hub_app, name="hub")
+app.add_typer(daemon_app, name="daemon")
 
 
 def resolve_token(token: str | None) -> str:
@@ -50,11 +57,19 @@ def list_agents(
     token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
     owner: Annotated[str | None, typer.Option(help="Filter by owner.")] = None,
     machine_id: Annotated[str | None, typer.Option(help="Filter by machine id.")] = None,
+    mine: Annotated[bool, typer.Option(help="List agents for the local machine from config.")] = False,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
 ) -> None:
-    resolved_token = resolve_token(token)
+    config = load_config(config_path)
+    resolved_token = token or config.token or os.environ.get("AGENTTALK_TOKEN")
+    if not resolved_token:
+        raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
+    resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    if mine:
+        machine_id = config.machine_id
     params = {key: value for key, value in {"owner": owner, "machine_id": machine_id}.items() if value}
     response = httpx.get(
-        f"{hub_url.rstrip('/')}/api/agents",
+        f"{resolved_hub_url.rstrip('/')}/api/agents",
         headers=auth_headers(resolved_token),
         params=params,
         timeout=10,
@@ -75,3 +90,116 @@ def list_agents(
             f"{agent['status'][:10]:10} "
             f"{agent['workspace']}"
         )
+
+
+@app.command("setup")
+def setup(
+    hub_url: Annotated[str, typer.Argument(help="Hub base URL.")],
+    token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    resolved_token = resolve_token(token)
+    config = config.model_copy(update={"hub_url": hub_url.rstrip("/"), "token": resolved_token})
+    save_config(config, config_path)
+    typer.echo(f"Saved AgentTalk config for Hub: {config.hub_url}")
+
+
+@app.command("discover")
+def discover() -> None:
+    panes = TmuxClient().list_panes()
+    if not panes:
+        typer.echo("No tmux panes found.")
+        return
+    typer.echo(f"{'#':3} {'kind':10} {'target':14} {'pane':8} workspace")
+    for index, pane in enumerate(panes, start=1):
+        typer.echo(f"{index:<3} {pane.kind[:10]:10} {pane.target[:14]:14} {pane.pane_id[:8]:8} {pane.current_path}")
+
+
+@app.command("register")
+def register(
+    short_id: Annotated[str, typer.Option(help="Globally unique agent short ID.")],
+    tmux_target: Annotated[str, typer.Option(help="tmux target, for example dev:0.1.")],
+    owner: Annotated[str | None, typer.Option(help="Agent owner. Defaults to config user.")] = None,
+    kind: Annotated[str, typer.Option(help="Agent kind.")] = "unknown",
+    workspace: Annotated[str, typer.Option(help="Agent workspace.")] = "",
+    pane_id: Annotated[str, typer.Option(help="tmux pane id if known.")] = "",
+    receive_mode: Annotated[ReceiveMode, typer.Option(help="Receive mode.")] = ReceiveMode.AUTO_SUBMIT,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+    sync: Annotated[bool, typer.Option(help="Immediately upsert this binding to Hub.")] = True,
+) -> None:
+    config = load_config(config_path)
+    binding = AgentBinding(
+        short_id=short_id,
+        owner=owner or config.user_name,
+        kind=kind,
+        workspace=workspace,
+        tmux_target=tmux_target,
+        pane_id=pane_id,
+        receive_mode=receive_mode,
+    )
+    config = upsert_binding(config, binding)
+    save_config(config, config_path)
+    if sync and config.token:
+        relay = AgentTalkRelay(
+            config,
+            hub_client=HubClient(config.hub_url, config.token),
+            tmux_client=TmuxClient(),
+        )
+        relay.sync_once()
+    typer.echo(f"Registered local binding: {short_id}")
+
+
+@app.command("rename")
+def rename(
+    old_id: str,
+    new_id: str,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    for binding in config.agents:
+        if binding.short_id == old_id:
+            updated = binding.model_copy(update={"short_id": new_id})
+            save_config(upsert_binding(config, updated), config_path)
+            typer.echo(f"Renamed {old_id} to {new_id}")
+            return
+    typer.echo(f"Local binding not found: {old_id}", err=True)
+    raise typer.Exit(1)
+
+
+@app.command("mode")
+def mode(
+    short_id: str,
+    receive_mode: ReceiveMode,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    for binding in config.agents:
+        if binding.short_id == short_id:
+            updated = binding.model_copy(update={"receive_mode": receive_mode})
+            save_config(upsert_binding(config, updated), config_path)
+            typer.echo(f"Updated {short_id} receive mode to {receive_mode.value}")
+            return
+    typer.echo(f"Local binding not found: {short_id}", err=True)
+    raise typer.Exit(1)
+
+
+@daemon_app.command("start")
+def daemon_start(
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 5.0,
+    once: Annotated[bool, typer.Option(help="Run one sync and exit.")] = False,
+) -> None:
+    config = load_config(config_path)
+    if not config.token:
+        raise typer.BadParameter("Config token is required. Run agenttalk setup first.")
+    relay = AgentTalkRelay(
+        config,
+        hub_client=HubClient(config.hub_url, config.token),
+        tmux_client=TmuxClient(),
+    )
+    if once:
+        result = relay.sync_once()
+        typer.echo(f"Synced {result.upserted} agents ({result.online} online, {result.offline} offline).")
+        return
+    relay.run_forever(interval_seconds=interval)
