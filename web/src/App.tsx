@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 import {
@@ -28,19 +28,35 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([])
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    refreshAgents()
+  const loadContext = useCallback(async (shortId: string) => {
+    try {
+      const context = await getAgentContext(shortId)
+      setContexts((current) => ({ ...current, [shortId]: context }))
+    } catch {
+      setContexts((current) => ({
+        ...current,
+        [shortId]: { short_id: shortId, context: '', updated_at: null },
+      }))
+    }
   }, [])
 
-  const selectedAgent = agents.find((agent) => agent.short_id === selectedId) || agents[0]
+  const refreshAgents = useCallback(async () => {
+    try {
+      setError('')
+      const next = await listAgents()
+      setAgents(next)
+      await Promise.all(next.map((agent) => loadContext(agent.short_id)))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [loadContext])
 
   useEffect(() => {
-    if (!selectedId && agents[0]) setSelectedId(agents[0].short_id)
-  }, [agents, selectedId])
+    void refreshAgents()
+  }, [refreshAgents])
 
-  useEffect(() => {
-    if (selectedAgent) loadContext(selectedAgent.short_id)
-  }, [selectedAgent?.short_id])
+  const effectiveSelectedId = selectedId || agents[0]?.short_id || ''
+  const selectedAgent = agents.find((agent) => agent.short_id === effectiveSelectedId)
 
   const filteredAgents = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -55,28 +71,6 @@ function App() {
       return matchesQuery && matchesStatus
     })
   }, [agents, query, statusFilter])
-
-  async function refreshAgents() {
-    try {
-      setError('')
-      const next = await listAgents()
-      setAgents(next)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  async function loadContext(shortId: string) {
-    try {
-      const context = await getAgentContext(shortId)
-      setContexts((current) => ({ ...current, [shortId]: context }))
-    } catch {
-      setContexts((current) => ({
-        ...current,
-        [shortId]: { short_id: shortId, context: '', updated_at: null },
-      }))
-    }
-  }
 
   async function handleSend(agent: Agent, body: string, watch: boolean) {
     const created = await sendMessage(agent.short_id, body)
@@ -142,7 +136,7 @@ function App() {
             agents={filteredAgents}
             allAgents={agents}
             selectedAgent={selectedAgent}
-            selectedId={selectedId}
+            selectedId={effectiveSelectedId}
             query={query}
             statusFilter={statusFilter}
             context={selectedAgent ? contexts[selectedAgent.short_id] : undefined}
@@ -168,7 +162,6 @@ function App() {
           <ContextOverview
             agents={agents}
             contexts={contexts}
-            onLoadContext={loadContext}
             onSelect={(id) => {
               setSelectedId(id)
               setPage('detail')
@@ -307,18 +300,12 @@ function AgentDetail({
 function ContextOverview({
   agents,
   contexts,
-  onLoadContext,
   onSelect,
 }: {
   agents: Agent[]
   contexts: Record<string, AgentContext>
-  onLoadContext: (id: string) => void
   onSelect: (id: string) => void
 }) {
-  useEffect(() => {
-    agents.forEach((agent) => onLoadContext(agent.short_id))
-  }, [agents])
-
   return (
     <div className="contextList">
       {agents.map((agent) => (
