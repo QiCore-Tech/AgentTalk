@@ -28,6 +28,17 @@ Rationale:
 
 ## Milestones
 
+## Progress
+
+| Milestone | Status | Commit | Notes |
+|---|---|---|---|
+| M1: Project Skeleton and Hub Registry | Done | `4d868de` | Hub registry, SQLite store, token auth, minimal CLI, tests, and AgentTalk skill file. |
+| M2: Local Relay Discovery and Registration | Pending |  |  |
+| M3: Point-to-Point Send and Injection | Pending |  |  |
+| M4: Watch Feedback and Context Reading | Pending |  |  |
+| M5: Web Agents Console | Pending |  |  |
+| M6: Web Live Terminal and Context Overview | Pending |  |  |
+
 ### M1: Project Skeleton and Hub Registry
 
 Goal: Run a Hub service and register/list agents through HTTP.
