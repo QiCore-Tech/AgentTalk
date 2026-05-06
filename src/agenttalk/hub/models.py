@@ -112,3 +112,23 @@ class MessageResponse(BaseModel):
 
 class PendingMessageResponse(BaseModel):
     message: MessageResponse | None
+
+
+class MessageResponseUpdateRequest(BaseModel):
+    response_text: str = ""
+    completed: bool = False
+
+
+class MessageResponseText(BaseModel):
+    message_id: str
+    response_text: str
+
+
+class AgentContextUpdateRequest(BaseModel):
+    context: str = ""
+
+
+class AgentContextResponse(BaseModel):
+    short_id: str
+    context: str
+    updated_at: str | None = None

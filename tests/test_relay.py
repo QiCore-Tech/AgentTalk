@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from agenttalk.config import AgentBinding, AgentTalkConfig
 from agenttalk.hub.models import AgentStatus, MessageStatus, ReceiveMode
-from agenttalk.relay import AgentTalkRelay, StaticTmuxClient, build_injected_message
+from agenttalk.relay import AgentTalkRelay, StaticTmuxClient, WatchState, build_injected_message
 from agenttalk.tmux import TmuxPane
 
 
@@ -14,6 +14,8 @@ class FakeHubClient:
     upserts: list[tuple[str, AgentStatus]] = field(default_factory=list)
     next_payload: dict | None = None
     status_updates: list[tuple[str, MessageStatus, str]] = field(default_factory=list)
+    response_updates: list[tuple[str, str, bool]] = field(default_factory=list)
+    context_updates: list[tuple[str, str]] = field(default_factory=list)
 
     def register_relay(self, _config: AgentTalkConfig) -> None:
         self.registered = True
@@ -28,6 +30,12 @@ class FakeHubClient:
 
     def update_message_status(self, message_id: str, status: MessageStatus, error: str = "") -> None:
         self.status_updates.append((message_id, status, error))
+
+    def update_message_response(self, message_id: str, response_text: str, *, completed: bool) -> None:
+        self.response_updates.append((message_id, response_text, completed))
+
+    def update_agent_context(self, short_id: str, context: str) -> None:
+        self.context_updates.append((short_id, context))
 
 
 class RecordingTmuxClient(StaticTmuxClient):
@@ -179,3 +187,57 @@ def test_relay_process_next_message_respects_paste_only() -> None:
     AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).process_next_message_once()
 
     assert tmux.injections[0][2] is False
+
+
+def test_relay_watch_detects_done_marker() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient([])
+    tmux.captures["dev:0.1"] = "before\nanswer\n<<<AGENTTALK_DONE:msg-1>>>\n"
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
+    relay.watch_states["msg-1"] = WatchState(
+        target="dev:0.1",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+
+    updates = relay.update_watches_once()
+
+    assert updates == 1
+    assert fake_hub.response_updates == [("msg-1", "answer", True)]
+    assert "msg-1" not in relay.watch_states
+
+
+def test_relay_sync_context_once() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+            )
+        ],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient([])
+    tmux.captures["dev:0.1"] = "recent output"
+
+    count = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).sync_context_once()
+
+    assert count == 1
+    assert fake_hub.context_updates == [("alice-codex-api", "recent output")]

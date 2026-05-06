@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -192,6 +193,8 @@ def send_message(
     hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
     token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
     config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+    watch: Annotated[bool, typer.Option(help="Watch status and response until completion.")] = False,
+    timeout: Annotated[int, typer.Option(help="Watch timeout seconds.")] = 120,
 ) -> None:
     config = load_config(config_path)
     resolved_token = token or config.token or os.environ.get("AGENTTALK_TOKEN")
@@ -212,6 +215,13 @@ def send_message(
     typer.echo(f"to: {payload['target']}")
     typer.echo(f"status: {payload['status']}")
     typer.echo(f"done marker: {payload['done_marker']}")
+    if watch:
+        watch_message(
+            payload["message_id"],
+            resolved_hub_url=resolved_hub_url,
+            resolved_token=resolved_token,
+            timeout=timeout,
+        )
 
 
 @app.command("status")
@@ -240,6 +250,89 @@ def message_status(
     typer.echo(f"status: {payload['status']}")
     if payload.get("error"):
         typer.echo(f"error: {payload['error']}")
+
+
+@app.command("response")
+def message_response(
+    message_id: str,
+    hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
+    token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    resolved_token = token or config.token or os.environ.get("AGENTTALK_TOKEN")
+    if not resolved_token:
+        raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
+    resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    response = httpx.get(
+        f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}/response",
+        headers=auth_headers(resolved_token),
+        timeout=10,
+    )
+    if response.status_code >= 400:
+        typer.echo(response.text, err=True)
+        raise typer.Exit(1)
+    typer.echo(response.json()["response_text"])
+
+
+@app.command("context")
+def agent_context(
+    agent_id: str,
+    lines: Annotated[int, typer.Option(help="Requested recent line count.")] = 120,
+    hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
+    token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    resolved_token = token or config.token or os.environ.get("AGENTTALK_TOKEN")
+    if not resolved_token:
+        raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
+    resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    response = httpx.get(
+        f"{resolved_hub_url.rstrip('/')}/api/agents/{agent_id}/context",
+        headers=auth_headers(resolved_token),
+        timeout=10,
+    )
+    if response.status_code >= 400:
+        typer.echo(response.text, err=True)
+        raise typer.Exit(1)
+    context = response.json()["context"]
+    if lines > 0:
+        context = "\n".join(context.splitlines()[-lines:])
+    typer.echo(context)
+
+
+def watch_message(*, message_id: str, resolved_hub_url: str, resolved_token: str, timeout: int) -> None:
+    deadline = time.monotonic() + timeout
+    last_status = ""
+    last_response = ""
+    while time.monotonic() < deadline:
+        message_payload = httpx.get(
+            f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}",
+            headers=auth_headers(resolved_token),
+            timeout=10,
+        )
+        message_payload.raise_for_status()
+        message = message_payload.json()
+        if message["status"] != last_status:
+            typer.echo(f"[{message['status']}]")
+            last_status = message["status"]
+        response_payload = httpx.get(
+            f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}/response",
+            headers=auth_headers(resolved_token),
+            timeout=10,
+        )
+        if response_payload.status_code == 200:
+            response_text = response_payload.json()["response_text"]
+            if response_text != last_response:
+                delta = response_text[len(last_response) :] if response_text.startswith(last_response) else response_text
+                if delta.strip():
+                    typer.echo(delta.rstrip())
+                last_response = response_text
+        if message["status"] in {"completed", "failed", "timeout"}:
+            return
+        time.sleep(1)
+    typer.echo("[timeout]")
 
 
 @daemon_app.command("start")

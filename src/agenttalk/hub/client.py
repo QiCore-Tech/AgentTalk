@@ -72,3 +72,48 @@ class HubClient:
             timeout=10,
         )
         response.raise_for_status()
+
+    def update_message_response(self, message_id: str, response_text: str, *, completed: bool) -> None:
+        response = httpx.post(
+            f"{self.hub_url}/api/messages/{message_id}/response",
+            headers=self.headers,
+            json={"response_text": response_text, "completed": completed},
+            timeout=10,
+        )
+        response.raise_for_status()
+
+    def get_message(self, message_id: str) -> dict:
+        response = httpx.get(
+            f"{self.hub_url}/api/messages/{message_id}",
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_message_response(self, message_id: str) -> dict:
+        response = httpx.get(
+            f"{self.hub_url}/api/messages/{message_id}/response",
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def update_agent_context(self, short_id: str, context: str) -> None:
+        response = httpx.post(
+            f"{self.hub_url}/api/agents/{short_id}/context",
+            headers=self.headers,
+            json={"context": context},
+            timeout=10,
+        )
+        response.raise_for_status()
+
+    def get_agent_context(self, short_id: str) -> dict:
+        response = httpx.get(
+            f"{self.hub_url}/api/agents/{short_id}/context",
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()

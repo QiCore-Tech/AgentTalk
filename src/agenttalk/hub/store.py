@@ -9,11 +9,15 @@ from pathlib import Path
 from typing import Any
 
 from agenttalk.hub.models import (
+    AgentContextResponse,
     AgentResponse,
     AgentStatus,
+    AgentContextUpdateRequest,
     AgentUpsertRequest,
     MessageCreateRequest,
     MessageResponse,
+    MessageResponseText,
+    MessageResponseUpdateRequest,
     MessageStatus,
     RelayRegisterRequest,
     RelayResponse,
@@ -100,6 +104,20 @@ class HubStore:
 
                 CREATE INDEX IF NOT EXISTS idx_messages_target_machine_status
                     ON messages(target_machine_id, status, created_at);
+
+                CREATE TABLE IF NOT EXISTS message_responses (
+                    message_id TEXT PRIMARY KEY,
+                    response_text TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(message_id) REFERENCES messages(message_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_contexts (
+                    short_id TEXT PRIMARY KEY,
+                    context TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(short_id) REFERENCES agents(short_id)
+                );
                 """
             )
 
@@ -325,6 +343,78 @@ class HubStore:
                 (status.value, error, now, message_id),
             )
         return self.get_message(message_id)
+
+    def update_message_response(
+        self,
+        message_id: str,
+        request: MessageResponseUpdateRequest,
+        *,
+        max_chars: int = 20_000,
+    ) -> MessageResponseText | None:
+        if self.get_message(message_id) is None:
+            return None
+        now = format_time(utc_now())
+        bounded = request.response_text[-max_chars:]
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO message_responses (message_id, response_text, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    response_text = excluded.response_text,
+                    updated_at = excluded.updated_at
+                """,
+                (message_id, bounded, now),
+            )
+        if request.completed:
+            self.update_message_status(message_id, MessageStatus.COMPLETED)
+        return MessageResponseText(message_id=message_id, response_text=bounded)
+
+    def get_message_response(self, message_id: str) -> MessageResponseText | None:
+        if self.get_message(message_id) is None:
+            return None
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT response_text FROM message_responses WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
+        return MessageResponseText(message_id=message_id, response_text=str(row["response_text"]) if row else "")
+
+    def update_agent_context(
+        self,
+        short_id: str,
+        request: AgentContextUpdateRequest,
+        *,
+        max_chars: int = 40_000,
+    ) -> AgentContextResponse | None:
+        if self.get_agent(short_id) is None:
+            return None
+        now = format_time(utc_now())
+        bounded = request.context[-max_chars:]
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_contexts (short_id, context, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(short_id) DO UPDATE SET
+                    context = excluded.context,
+                    updated_at = excluded.updated_at
+                """,
+                (short_id, bounded, now),
+            )
+        return AgentContextResponse(short_id=short_id, context=bounded, updated_at=now)
+
+    def get_agent_context(self, short_id: str) -> AgentContextResponse | None:
+        if self.get_agent(short_id) is None:
+            return None
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT context, updated_at FROM agent_contexts WHERE short_id = ?",
+                (short_id,),
+            ).fetchone()
+        if row is None:
+            return AgentContextResponse(short_id=short_id, context="", updated_at=None)
+        return AgentContextResponse(short_id=short_id, context=str(row["context"]), updated_at=str(row["updated_at"]))
 
     def _agent_from_row(self, row: sqlite3.Row) -> AgentResponse:
         stored_status = AgentStatus(str(row["status"]))

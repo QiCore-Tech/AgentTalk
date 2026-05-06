@@ -10,11 +10,13 @@ from fastapi.responses import JSONResponse
 from agenttalk.hub.errors import api_error
 from agenttalk.hub.models import (
     AgentListResponse,
+    AgentContextUpdateRequest,
     AgentStatus,
     AgentUpsertRequest,
     ErrorResponse,
     HealthResponse,
     MessageCreateRequest,
+    MessageResponseUpdateRequest,
     MessageStatusUpdateRequest,
     PendingMessageResponse,
     RelayHeartbeatRequest,
@@ -180,5 +182,57 @@ def create_app(settings: HubSettings) -> FastAPI:
         if message is None:
             raise api_error(404, "message_not_found", f"Message not found: {message_id}")
         return message
+
+    @app.get(
+        "/api/messages/{message_id}/response",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def get_message_response(message_id: str, hub_store: HubStore = Depends(get_store)):
+        response = hub_store.get_message_response(message_id)
+        if response is None:
+            raise api_error(404, "message_not_found", f"Message not found: {message_id}")
+        return response
+
+    @app.post(
+        "/api/messages/{message_id}/response",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def update_message_response(
+        message_id: str,
+        request: MessageResponseUpdateRequest,
+        hub_store: HubStore = Depends(get_store),
+    ):
+        response = hub_store.update_message_response(message_id, request)
+        if response is None:
+            raise api_error(404, "message_not_found", f"Message not found: {message_id}")
+        return response
+
+    @app.get(
+        "/api/agents/{short_id}/context",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def get_agent_context(short_id: str, hub_store: HubStore = Depends(get_store)):
+        context = hub_store.get_agent_context(short_id)
+        if context is None:
+            raise api_error(404, "agent_not_found", f"Agent not found: {short_id}")
+        return context
+
+    @app.post(
+        "/api/agents/{short_id}/context",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def update_agent_context(
+        short_id: str,
+        request: AgentContextUpdateRequest,
+        hub_store: HubStore = Depends(get_store),
+    ):
+        context = hub_store.update_agent_context(short_id, request)
+        if context is None:
+            raise api_error(404, "agent_not_found", f"Agent not found: {short_id}")
+        return context
 
     return app

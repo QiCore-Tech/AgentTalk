@@ -16,11 +16,19 @@ class RelaySyncResult:
     offline: int
 
 
+@dataclass
+class WatchState:
+    target: str
+    baseline: str
+    done_marker: str
+
+
 class AgentTalkRelay:
     def __init__(self, config: AgentTalkConfig, *, hub_client: HubClient, tmux_client: TmuxClient) -> None:
         self.config = config
         self.hub_client = hub_client
         self.tmux_client = tmux_client
+        self.watch_states: dict[str, WatchState] = {}
 
     def sync_once(self) -> RelaySyncResult:
         self.hub_client.register_relay(self.config)
@@ -65,6 +73,7 @@ class AgentTalkRelay:
             done_marker=message["done_marker"],
         )
         try:
+            baseline = self.tmux_client.capture_pane(binding.tmux_target, lines=500)
             self.tmux_client.inject_text(
                 binding.tmux_target,
                 payload,
@@ -74,7 +83,43 @@ class AgentTalkRelay:
             self.hub_client.update_message_status(message["message_id"], MessageStatus.FAILED, str(exc))
             return True
         self.hub_client.update_message_status(message["message_id"], MessageStatus.INJECTED)
+        self.watch_states[message["message_id"]] = WatchState(
+            target=binding.tmux_target,
+            baseline=baseline,
+            done_marker=message["done_marker"],
+        )
         return True
+
+    def update_watches_once(self) -> int:
+        completed: list[str] = []
+        updates = 0
+        for message_id, state in list(self.watch_states.items()):
+            output = self.tmux_client.capture_pane(state.target, lines=800)
+            delta = output_delta(state.baseline, output)
+            if not delta:
+                continue
+            done = state.done_marker in delta
+            response_text = delta.replace(state.done_marker, "").rstrip()
+            self.hub_client.update_message_response(message_id, response_text, completed=done)
+            if done:
+                completed.append(message_id)
+            else:
+                self.hub_client.update_message_status(message_id, MessageStatus.WORKING)
+            updates += 1
+        for message_id in completed:
+            self.watch_states.pop(message_id, None)
+        return updates
+
+    def sync_context_once(self, *, lines: int = 200) -> int:
+        count = 0
+        for binding in self.config.agents:
+            try:
+                context = self.tmux_client.capture_pane(binding.tmux_target, lines=lines)
+            except Exception:
+                continue
+            self.hub_client.update_agent_context(binding.short_id, context)
+            count += 1
+        return count
 
 
 def binding_status(
@@ -93,9 +138,13 @@ def binding_status(
 class StaticTmuxClient(TmuxClient):
     def __init__(self, panes: list[TmuxPane]) -> None:
         self._panes = panes
+        self.captures: dict[str, str] = {}
 
     def list_panes(self) -> list[TmuxPane]:
         return self._panes
+
+    def capture_pane(self, target: str, *, lines: int = 300) -> str:
+        return self.captures.get(target, "")
 
 
 def build_injected_message(*, message_id: str, sender: str, target: str, body: str, done_marker: str) -> str:
@@ -114,3 +163,15 @@ def build_injected_message(*, message_id: str, sender: str, target: str, body: s
             "",
         ]
     )
+
+
+def output_delta(baseline: str, current: str) -> str:
+    if current.startswith(baseline):
+        return current[len(baseline) :]
+    baseline_lines = baseline.splitlines()
+    current_lines = current.splitlines()
+    max_overlap = min(len(baseline_lines), len(current_lines))
+    for size in range(max_overlap, 0, -1):
+        if baseline_lines[-size:] == current_lines[:size]:
+            return "\n".join(current_lines[size:])
+    return current

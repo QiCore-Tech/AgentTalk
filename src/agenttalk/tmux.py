@@ -48,6 +48,18 @@ class TmuxClient:
             if enter.returncode != 0:
                 raise RuntimeError(enter.stderr.strip() or "tmux submit failed")
 
+    def capture_pane(self, target: str, *, lines: int = 300) -> str:
+        start = f"-{max(lines, 1)}"
+        proc = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", target, "-S", start],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "tmux capture-pane failed")
+        return proc.stdout
+
 
 def parse_list_panes(output: str) -> list[TmuxPane]:
     panes: list[TmuxPane] = []
