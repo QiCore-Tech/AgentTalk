@@ -36,8 +36,8 @@ Rationale:
 | M2: Local Relay Discovery and Registration | Done | `85e3e79` | Read-only tmux discovery, local config, relay one-shot sync, CLI setup/register/discover/list --mine/daemon start, fake-tmux tests. |
 | M3: Point-to-Point Send and Injection | Done | `ce15c03` | Message persistence/status APIs, relay message polling, structured tmux injection primitive, CLI send/status, fake-injection tests. |
 | M4: Watch Feedback and Context Reading | Done | `6fc68fc` | Message responses, marker completion, CLI watch/response/context, context APIs, capture support, fake tests and dedicated tmux e2e. |
-| M5: Web Agents Console | Pending |  |  |
-| M6: Web Live Terminal and Context Overview | Pending |  |  |
+| M5: Web Agents Console | Done | `f4d8023` | React/Vite Agent Console, Agents table, side preview, detail page, structured Web messaging, Playwright coverage. |
+| M6: Web Live Terminal and Context Overview | Done | `f4d8023` | xterm.js terminal area, Hub WebSocket tmux bridge, Context overview, terminal WebSocket tests, dedicated tmux e2e. |
 
 ### M1: Project Skeleton and Hub Registry
 
