@@ -9,6 +9,7 @@ class HubSettings:
     database_path: Path
     token: str
     heartbeat_ttl_seconds: int = 30
+    web_dist_path: Path | None = None
 
 
 def default_database_path() -> Path:

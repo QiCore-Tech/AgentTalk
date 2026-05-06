@@ -43,11 +43,13 @@ def serve_hub(
     token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
     database: Annotated[Path, typer.Option(help="SQLite database path.")] = default_database_path(),
     heartbeat_ttl: Annotated[int, typer.Option(help="Heartbeat TTL in seconds.")] = 30,
+    web_dist: Annotated[Path | None, typer.Option(help="Built Web UI dist path.")] = None,
 ) -> None:
     settings = HubSettings(
         database_path=database,
         token=resolve_token(token),
         heartbeat_ttl_seconds=heartbeat_ttl,
+        web_dist_path=web_dist,
     )
     uvicorn.run(create_app(settings), host=host, port=port)
 

@@ -48,6 +48,32 @@ uv run agenttalk status msg-20260506170000000000
 
 M3 includes production tmux injection support for registered agents. Do not run a relay against important panes unless you intend to allow AgentTalk to inject messages into them.
 
+## Web UI
+
+Build the Web UI:
+
+```bash
+cd web
+npm install
+npm run build
+```
+
+Serve it from the Hub:
+
+```bash
+AGENTTALK_TOKEN=dev-token uv run agenttalk hub serve \
+  --host 127.0.0.1 \
+  --port 8787 \
+  --web-dist web/dist
+```
+
+Run Web tests:
+
+```bash
+cd web
+npm run test:e2e
+```
+
 ## Agent Skill
 
 Agents can use the bundled skill at `.agents/skills/agenttalk/SKILL.md` to learn when and how to call AgentTalk commands.

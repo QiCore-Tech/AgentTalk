@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
+from fastapi.websockets import WebSocket
 from fastapi.responses import JSONResponse
 
 from agenttalk.hub.errors import api_error
@@ -24,6 +26,7 @@ from agenttalk.hub.models import (
 )
 from agenttalk.hub.settings import HubSettings
 from agenttalk.hub.store import AgentFilters, HubStore
+from agenttalk.tmux import TmuxClient
 
 
 def create_app(settings: HubSettings) -> FastAPI:
@@ -78,6 +81,31 @@ def create_app(settings: HubSettings) -> FastAPI:
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
         return HealthResponse()
+
+    @app.websocket("/ws/terminal/{short_id}")
+    async def terminal_websocket(websocket: WebSocket, short_id: str):
+        await websocket.accept()
+        agent = store.get_agent(short_id)
+        if agent is None:
+            await websocket.send_text(f"Agent not found: {short_id}\r\n")
+            await websocket.close()
+            return
+        tmux = TmuxClient()
+        await websocket.send_text(f"AgentTalk terminal connected: {short_id}\r\n")
+        try:
+            await websocket.send_text(tmux.capture_pane(agent.tmux_target, lines=80).replace("\n", "\r\n"))
+        except Exception as exc:
+            await websocket.send_text(f"\r\nUnable to capture tmux pane: {exc}\r\n")
+        try:
+            while True:
+                data = await websocket.receive_text()
+                try:
+                    tmux.inject_text(agent.tmux_target, data, submit=False)
+                    await websocket.send_text(data)
+                except Exception as exc:
+                    await websocket.send_text(f"\r\nUnable to write tmux pane: {exc}\r\n")
+        except Exception:
+            return
 
     @app.post(
         "/api/relays/register",
@@ -234,5 +262,8 @@ def create_app(settings: HubSettings) -> FastAPI:
         if context is None:
             raise api_error(404, "agent_not_found", f"Agent not found: {short_id}")
         return context
+
+    if settings.web_dist_path and settings.web_dist_path.exists():
+        app.mount("/", StaticFiles(directory=settings.web_dist_path, html=True), name="web")
 
     return app
