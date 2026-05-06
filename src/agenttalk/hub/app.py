@@ -14,6 +14,9 @@ from agenttalk.hub.models import (
     AgentUpsertRequest,
     ErrorResponse,
     HealthResponse,
+    MessageCreateRequest,
+    MessageStatusUpdateRequest,
+    PendingMessageResponse,
     RelayHeartbeatRequest,
     RelayRegisterRequest,
 )
@@ -129,5 +132,53 @@ def create_app(settings: HubSettings) -> FastAPI:
         if agent is None:
             raise api_error(404, "agent_not_found", f"Agent not found: {short_id}")
         return agent
+
+    @app.post(
+        "/api/messages",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    )
+    def create_message(request: MessageCreateRequest, hub_store: HubStore = Depends(get_store)):
+        message, error = hub_store.create_message(request)
+        if error == "target_not_found":
+            raise api_error(404, "target_not_found", f"Target agent not found: {request.to}")
+        if error == "target_offline":
+            raise api_error(409, "target_offline", f"Target agent is offline: {request.to}")
+        return message
+
+    @app.get(
+        "/api/messages/{message_id}",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def get_message(message_id: str, hub_store: HubStore = Depends(get_store)):
+        message = hub_store.get_message(message_id)
+        if message is None:
+            raise api_error(404, "message_not_found", f"Message not found: {message_id}")
+        return message
+
+    @app.get(
+        "/api/relays/{machine_id}/messages/next",
+        response_model=PendingMessageResponse,
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}},
+    )
+    def next_relay_message(machine_id: str, hub_store: HubStore = Depends(get_store)) -> PendingMessageResponse:
+        return PendingMessageResponse(message=hub_store.next_message_for_relay(machine_id))
+
+    @app.post(
+        "/api/messages/{message_id}/status",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def update_message_status(
+        message_id: str,
+        request: MessageStatusUpdateRequest,
+        hub_store: HubStore = Depends(get_store),
+    ):
+        message = hub_store.update_message_status(message_id, request.status, request.error)
+        if message is None:
+            raise api_error(404, "message_not_found", f"Message not found: {message_id}")
+        return message
 
     return app

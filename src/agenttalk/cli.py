@@ -184,6 +184,64 @@ def mode(
     raise typer.Exit(1)
 
 
+@app.command("send")
+def send_message(
+    to: Annotated[str, typer.Option(help="Target agent short ID.")],
+    message: Annotated[str, typer.Option(help="Message body.")],
+    sender: Annotated[str, typer.Option(help="Sender label or agent short ID.")] = "cli",
+    hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
+    token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    resolved_token = token or config.token or os.environ.get("AGENTTALK_TOKEN")
+    if not resolved_token:
+        raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
+    resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    response = httpx.post(
+        f"{resolved_hub_url.rstrip('/')}/api/messages",
+        headers=auth_headers(resolved_token),
+        json={"to": to, "body": message, "sender": sender},
+        timeout=10,
+    )
+    if response.status_code >= 400:
+        typer.echo(response.text, err=True)
+        raise typer.Exit(1)
+    payload = response.json()
+    typer.echo(f"message: {payload['message_id']}")
+    typer.echo(f"to: {payload['target']}")
+    typer.echo(f"status: {payload['status']}")
+    typer.echo(f"done marker: {payload['done_marker']}")
+
+
+@app.command("status")
+def message_status(
+    message_id: str,
+    hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
+    token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    resolved_token = token or config.token or os.environ.get("AGENTTALK_TOKEN")
+    if not resolved_token:
+        raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
+    resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    response = httpx.get(
+        f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}",
+        headers=auth_headers(resolved_token),
+        timeout=10,
+    )
+    if response.status_code >= 400:
+        typer.echo(response.text, err=True)
+        raise typer.Exit(1)
+    payload = response.json()
+    typer.echo(f"message: {payload['message_id']}")
+    typer.echo(f"to: {payload['target']}")
+    typer.echo(f"status: {payload['status']}")
+    if payload.get("error"):
+        typer.echo(f"error: {payload['error']}")
+
+
 @daemon_app.command("start")
 def daemon_start(
     config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,

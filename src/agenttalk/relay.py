@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from agenttalk.config import AgentTalkConfig
 from agenttalk.hub.client import HubClient
-from agenttalk.hub.models import AgentStatus
+from agenttalk.hub.models import AgentStatus, MessageStatus, ReceiveMode
 from agenttalk.tmux import TmuxClient, TmuxPane
 
 
@@ -41,8 +41,40 @@ class AgentTalkRelay:
     def run_forever(self, *, interval_seconds: float = 5.0) -> None:
         while True:
             self.sync_once()
+            self.process_next_message_once()
             self.hub_client.heartbeat(self.config.machine_id)
             time.sleep(interval_seconds)
+
+    def process_next_message_once(self) -> bool:
+        message = self.hub_client.next_message(self.config.machine_id)
+        if message is None:
+            return False
+        binding = next((agent for agent in self.config.agents if agent.short_id == message["target"]), None)
+        if binding is None:
+            self.hub_client.update_message_status(
+                message["message_id"],
+                MessageStatus.FAILED,
+                "Target binding not found on relay",
+            )
+            return True
+        payload = build_injected_message(
+            message_id=message["message_id"],
+            sender=message["sender"],
+            target=message["target"],
+            body=message["body"],
+            done_marker=message["done_marker"],
+        )
+        try:
+            self.tmux_client.inject_text(
+                binding.tmux_target,
+                payload,
+                submit=binding.receive_mode == ReceiveMode.AUTO_SUBMIT,
+            )
+        except Exception as exc:
+            self.hub_client.update_message_status(message["message_id"], MessageStatus.FAILED, str(exc))
+            return True
+        self.hub_client.update_message_status(message["message_id"], MessageStatus.INJECTED)
+        return True
 
 
 def binding_status(
@@ -64,3 +96,21 @@ class StaticTmuxClient(TmuxClient):
 
     def list_panes(self) -> list[TmuxPane]:
         return self._panes
+
+
+def build_injected_message(*, message_id: str, sender: str, target: str, body: str, done_marker: str) -> str:
+    return "\n".join(
+        [
+            "[AgentTalk Message]",
+            f"message_id: {message_id}",
+            f"from: {sender}",
+            f"to: {target}",
+            "",
+            "Task:",
+            body.strip(),
+            "",
+            "When done, print this exact marker on its own line:",
+            done_marker,
+            "",
+        ]
+    )

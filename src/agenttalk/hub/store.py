@@ -8,7 +8,16 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from agenttalk.hub.models import AgentResponse, AgentStatus, AgentUpsertRequest, RelayRegisterRequest, RelayResponse
+from agenttalk.hub.models import (
+    AgentResponse,
+    AgentStatus,
+    AgentUpsertRequest,
+    MessageCreateRequest,
+    MessageResponse,
+    MessageStatus,
+    RelayRegisterRequest,
+    RelayResponse,
+)
 
 
 def utc_now() -> datetime:
@@ -75,6 +84,22 @@ class HubStore:
 
                 CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner);
                 CREATE INDEX IF NOT EXISTS idx_agents_machine_id ON agents(machine_id);
+
+                CREATE TABLE IF NOT EXISTS messages (
+                    message_id TEXT PRIMARY KEY,
+                    sender TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    target_machine_id TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    done_marker TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    error TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_messages_target_machine_status
+                    ON messages(target_machine_id, status, created_at);
                 """
             )
 
@@ -219,6 +244,88 @@ class HubStore:
             return None
         return self._agent_from_row(row)
 
+    def create_message(self, request: MessageCreateRequest) -> tuple[MessageResponse | None, str | None]:
+        target = self.get_agent(request.to)
+        if target is None:
+            return None, "target_not_found"
+        if target.status == AgentStatus.OFFLINE:
+            return None, "target_offline"
+        created_at = format_time(utc_now())
+        message_id = self._next_message_id()
+        done_marker = f"<<<AGENTTALK_DONE:{message_id}>>>"
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO messages (
+                    message_id, sender, target, target_machine_id, body, done_marker,
+                    status, error, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    request.sender,
+                    request.to,
+                    target.machine_id,
+                    request.body,
+                    done_marker,
+                    MessageStatus.SENT.value,
+                    "",
+                    created_at,
+                    created_at,
+                ),
+            )
+        return self.get_message(message_id), None
+
+    def get_message(self, message_id: str) -> MessageResponse | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT message_id, sender, target, target_machine_id, body, done_marker,
+                       status, error, created_at, updated_at
+                FROM messages
+                WHERE message_id = ?
+                """,
+                (message_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._message_from_row(row)
+
+    def next_message_for_relay(self, machine_id: str) -> MessageResponse | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT message_id, sender, target, target_machine_id, body, done_marker,
+                       status, error, created_at, updated_at
+                FROM messages
+                WHERE target_machine_id = ? AND status = ?
+                ORDER BY created_at
+                LIMIT 1
+                """,
+                (machine_id, MessageStatus.SENT.value),
+            ).fetchone()
+            if row is None:
+                return None
+            now = format_time(utc_now())
+            conn.execute(
+                "UPDATE messages SET status = ?, updated_at = ? WHERE message_id = ?",
+                (MessageStatus.DELIVERED.value, now, row["message_id"]),
+            )
+        return self.get_message(str(row["message_id"]))
+
+    def update_message_status(self, message_id: str, status: MessageStatus, error: str = "") -> MessageResponse | None:
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            existing = conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (message_id,)).fetchone()
+            if existing is None:
+                return None
+            conn.execute(
+                "UPDATE messages SET status = ?, error = ?, updated_at = ? WHERE message_id = ?",
+                (status.value, error, now, message_id),
+            )
+        return self.get_message(message_id)
+
     def _agent_from_row(self, row: sqlite3.Row) -> AgentResponse:
         stored_status = AgentStatus(str(row["status"]))
         relay_last_seen_at = row["relay_last_seen_at"]
@@ -243,3 +350,21 @@ class HubStore:
         if utc_now() - last_seen > timedelta(seconds=self.heartbeat_ttl_seconds):
             return AgentStatus.OFFLINE
         return stored_status
+
+    def _next_message_id(self) -> str:
+        stamp = utc_now().strftime("%Y%m%d%H%M%S%f")
+        return f"msg-{stamp}"
+
+    def _message_from_row(self, row: sqlite3.Row) -> MessageResponse:
+        return MessageResponse(
+            message_id=str(row["message_id"]),
+            sender=str(row["sender"]),
+            target=str(row["target"]),
+            target_machine_id=str(row["target_machine_id"]),
+            body=str(row["body"]),
+            done_marker=str(row["done_marker"]),
+            status=MessageStatus(str(row["status"])),
+            error=str(row["error"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )

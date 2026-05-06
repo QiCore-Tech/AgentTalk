@@ -29,6 +29,25 @@ class TmuxClient:
             raise RuntimeError(proc.stderr.strip() or "tmux list-panes failed")
         return parse_list_panes(proc.stdout)
 
+    def inject_text(self, target: str, text: str, *, submit: bool) -> None:
+        proc = subprocess.run(
+            ["tmux", "send-keys", "-t", target, "-l", text],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "tmux send-keys failed")
+        if submit:
+            enter = subprocess.run(
+                ["tmux", "send-keys", "-t", target, "Enter"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if enter.returncode != 0:
+                raise RuntimeError(enter.stderr.strip() or "tmux submit failed")
+
 
 def parse_list_panes(output: str) -> list[TmuxPane]:
     panes: list[TmuxPane] = []

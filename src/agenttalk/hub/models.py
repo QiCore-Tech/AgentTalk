@@ -18,6 +18,16 @@ class ReceiveMode(StrEnum):
     PASTE_ONLY = "paste_only"
 
 
+class MessageStatus(StrEnum):
+    SENT = "sent"
+    DELIVERED = "delivered"
+    INJECTED = "injected"
+    WORKING = "working"
+    COMPLETED = "completed"
+    TIMEOUT = "timeout"
+    FAILED = "failed"
+
+
 class ErrorBody(BaseModel):
     code: str
     message: str
@@ -74,3 +84,31 @@ class AgentResponse(BaseModel):
 
 class AgentListResponse(BaseModel):
     agents: list[AgentResponse]
+
+
+class MessageCreateRequest(BaseModel):
+    to: str = Field(min_length=1, max_length=120)
+    body: str = Field(min_length=1)
+    sender: str = Field(default="web", min_length=1, max_length=120)
+
+
+class MessageStatusUpdateRequest(BaseModel):
+    status: MessageStatus
+    error: str = ""
+
+
+class MessageResponse(BaseModel):
+    message_id: str
+    sender: str
+    target: str
+    target_machine_id: str
+    body: str
+    done_marker: str
+    status: MessageStatus
+    error: str = ""
+    created_at: str
+    updated_at: str
+
+
+class PendingMessageResponse(BaseModel):
+    message: MessageResponse | None

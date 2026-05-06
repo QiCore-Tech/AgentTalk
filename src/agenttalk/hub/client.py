@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 
 from agenttalk.config import AgentBinding, AgentTalkConfig
-from agenttalk.hub.models import AgentStatus
+from agenttalk.hub.models import AgentStatus, MessageStatus
 
 
 class HubClient:
@@ -51,6 +51,24 @@ class HubClient:
                 "receive_mode": binding.receive_mode.value,
                 "status": status.value,
             },
+            timeout=10,
+        )
+        response.raise_for_status()
+
+    def next_message(self, machine_id: str) -> dict | None:
+        response = httpx.get(
+            f"{self.hub_url}/api/relays/{machine_id}/messages/next",
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()["message"]
+
+    def update_message_status(self, message_id: str, status: MessageStatus, error: str = "") -> None:
+        response = httpx.post(
+            f"{self.hub_url}/api/messages/{message_id}/status",
+            headers=self.headers,
+            json={"status": status.value, "error": error},
             timeout=10,
         )
         response.raise_for_status()
