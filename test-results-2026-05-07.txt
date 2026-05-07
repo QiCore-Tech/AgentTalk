@@ -1,0 +1,41 @@
+[1;33m▶[0m === 1. Hub Health & Basic API ===
+[0;32m✓ PASS[0m: Hub health endpoint
+[0;32m✓ PASS[0m: List agents API
+[1;33m▶[0m === 2. Agent Registration & Management ===
+[0;32m✓ PASS[0m: Register agent via CLI
+[0;32m✓ PASS[0m: Relay sync to Hub
+[0;32m✓ PASS[0m: Agent exists on Hub
+[0;32m✓ PASS[0m: Relay sync to Hub
+[0;32m✓ PASS[0m: Agent exists on Hub
+[1;33m▶[0m === 3. Message Delivery ===
+[0;32m✓ PASS[0m: Create message via API
+[0;32m✓ PASS[0m: Relay processes messages
+[0;32m✓ PASS[0m: Message status progression
+[1;33m▶[0m === 4. Health Monitoring & Alerts ===
+[0;32m✓ PASS[0m: Health report API
+[0;32m✓ PASS[0m: Alert creation
+[1;33m▶[0m === 5. Terminal Context ===
+[0;32m✓ PASS[0m: Update terminal context
+[0;32m✓ PASS[0m: Get terminal context
+[1;33m▶[0m === 6. Per-Agent Auto Resume Config ===
+[0;32m✓ PASS[0m: Get auto-resume config
+[0;32m✓ PASS[0m: Update auto-resume config
+[0;32m✓ PASS[0m: Verify auto-resume update
+[1;33m▶[0m === 7. LLM Config ===
+[0;32m✓ PASS[0m: Get LLM config
+[1;33m▶[0m === 8. Feishu Integration ===
+[0;32m✓ PASS[0m: Feishu WebSocket (log check skipped)
+[0;32m✓ PASS[0m: Feishu alert send
+[1;33m▶[0m === 9. CLI Commands ===
+[0;32m✓ PASS[0m: CLI list agents
+[0;32m✓ PASS[0m: CLI get context
+[0;32m✓ PASS[0m: CLI auto-resume config
+[1;33m▶[0m === 10. Cleanup ===
+
+========================================
+Test Results
+========================================
+[0;32mPassed: 23[0m
+[0;31mFailed: 0[0m
+========================================
+[0;32mAll tests passed![0m
