@@ -21,18 +21,42 @@ AgentTalk 是一个轻量级局域网 Agent 通信系统，面向运行在 tmux 
 
 AgentTalk 支持 Windows 原生运行（无需 WSL）：
 
+**方式 1：Hub 用 Docker，Agent 在 Windows 原生运行（推荐）**
+
 ```powershell
 # 1. 克隆仓库
 git clone https://git.qicore.tech/QiCore/soha_agentTalk.git
 cd soha_agentTalk
 
-# 2. 运行 Windows 安装脚本
+# 2. 启动 Hub（Docker Desktop 需先安装并运行）
+.\scripts\start-hub-windows.ps1
+
+# 3. 安装 CLI
+cd ..  # 回到项目根目录
 .\scripts\setup-windows.ps1
 
-# 3. 在终端窗口中启动您的 AI Agent，然后注册
+# 4. 在终端窗口中启动您的 AI Agent，然后注册
 agenttalk register --short-id my-agent --tmux-target mywindow:0.0
 
-# 4. 启动 relay
+# 5. 启动 relay
+agenttalk daemon start
+```
+
+**方式 2：全部原生运行（不装 Docker）**
+
+```powershell
+# 1. 克隆仓库
+git clone https://git.qicore.tech/QiCore/soha_agentTalk.git
+cd soha_agentTalk
+
+# 2. 运行安装脚本
+.\scripts\setup-windows.ps1
+
+# 3. 启动 Hub（Python 原生）
+agenttalk hub serve --port 8787 --token YOUR_TOKEN
+
+# 4. 在另一个终端中启动 AI Agent 并注册
+agenttalk register --short-id my-agent --tmux-target mywindow:0.0
 agenttalk daemon start
 ```
 

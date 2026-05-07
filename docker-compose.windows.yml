@@ -1,0 +1,33 @@
+services:
+  agenttalk-hub:
+    build:
+      context: .
+      args:
+        VITE_AGENTTALK_TOKEN: "${AGENTTALK_TOKEN}"
+    container_name: agenttalk-hub
+    restart: unless-stopped
+    ports:
+      - "${AGENTTALK_PORT:-8787}:8787"
+    environment:
+      AGENTTALK_TOKEN: "${AGENTTALK_TOKEN:?AGENTTALK_TOKEN is required}"
+      AGENTTALK_HOST: "0.0.0.0"
+      AGENTTALK_PORT: "8787"
+      AGENTTALK_DATABASE: "/data/agenttalk.sqlite3"
+      AGENTTALK_PUBLIC_BASE_URL: "${AGENTTALK_PUBLIC_BASE_URL:-}"
+      FEISHU_ENABLE: "${FEISHU_ENABLE:-0}"
+      FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
+      FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
+      FEISHU_ALERT_CHAT_ID: "${FEISHU_ALERT_CHAT_ID:-}"
+    volumes:
+      # Windows: Docker Desktop handles path conversion automatically
+      # Data will be stored in a Docker volume
+      - agenttalk-data:/data
+      # NOTE: On Windows, tmux socket mounting is not supported.
+      # The Hub PTY feature connects to tmux via the Docker container's own tmux.
+      # If you need to monitor Windows host processes, run the relay natively on Windows
+      # instead of in Docker. See scripts/setup-windows.ps1
+    # Windows Docker Desktop uses WSL2 backend by default.
+    # Ensure Docker Desktop is running before executing docker compose up.
+
+volumes:
+  agenttalk-data:
