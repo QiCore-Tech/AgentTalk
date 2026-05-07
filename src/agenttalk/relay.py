@@ -153,8 +153,8 @@ class AgentTalkRelay:
             
             online += 1
             health = self._check_agent_health(binding, pane)
-            self.hub_client.report_health(health)
             self.hub_client.upsert_agent(self.config, binding, health.status)
+            self.hub_client.report_health(health)
         return RelaySyncResult(upserted=len(self.config.agents), online=online, offline=offline)
 
     def _check_agent_health(self, binding, pane: TmuxPane) -> AgentHealthReport:
