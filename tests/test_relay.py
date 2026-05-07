@@ -37,6 +37,12 @@ class FakeHubClient:
     def update_agent_context(self, short_id: str, context: str) -> None:
         self.context_updates.append((short_id, context))
 
+    def report_health(self, report) -> None:
+        pass
+
+    def heartbeat(self, machine_id: str) -> None:
+        pass
+
 
 class RecordingTmuxClient(StaticTmuxClient):
     def __init__(self, panes: list[TmuxPane]) -> None:
@@ -83,6 +89,7 @@ def test_relay_sync_marks_missing_pane_offline() -> None:
                 current_path="/workspace/api",
                 title="codex",
                 kind="codex",
+                pane_pid=None,
             )
         ]
     )
@@ -91,7 +98,7 @@ def test_relay_sync_marks_missing_pane_offline() -> None:
 
     assert fake_hub.registered is True
     assert fake_hub.upserts == [
-        ("alice-codex-api", AgentStatus.ONLINE),
+        ("alice-codex-api", AgentStatus.IDLE),
         ("alice-claude-ui", AgentStatus.OFFLINE),
     ]
     assert result.upserted == 2

@@ -7,7 +7,18 @@ from dataclasses import dataclass
 from agenttalk.config import AgentTalkConfig
 from agenttalk.hub.client import HubClient
 from agenttalk.hub.models import AgentHealthReport, AgentStatus, MessageStatus, ReceiveMode
-from agenttalk.tmux import TmuxClient, TmuxPane, is_process_alive
+from agenttalk.process_manager import (
+    ManagedProcess,
+    ProcessManager,
+    TmuxProcessManager,
+    get_process_manager,
+    is_process_alive,
+    output_fingerprint,
+)
+
+# Backward compat
+TmuxClient = TmuxProcessManager
+TmuxPane = ManagedProcess
 
 # Optional LLM-based status analysis
 try:
@@ -119,7 +130,7 @@ def output_fingerprint(output: str) -> str:
 
 
 class AgentTalkRelay:
-    def __init__(self, config: AgentTalkConfig, *, hub_client: HubClient, tmux_client: TmuxClient) -> None:
+    def __init__(self, config: AgentTalkConfig, *, hub_client: HubClient, tmux_client: ProcessManager) -> None:
         self.config = config
         self.hub_client = hub_client
         self.tmux_client = tmux_client
@@ -139,7 +150,7 @@ class AgentTalkRelay:
 
     def sync_once(self) -> RelaySyncResult:
         self.hub_client.register_relay(self.config)
-        panes = self.tmux_client.list_panes()
+        panes = self.tmux_client.list_processes()
         pane_targets = {pane.target: pane for pane in panes}
         pane_ids = {pane.pane_id: pane for pane in panes}
         online = 0
@@ -157,7 +168,7 @@ class AgentTalkRelay:
             self.hub_client.report_health(health)
         return RelaySyncResult(upserted=len(self.config.agents), online=online, offline=offline)
 
-    def _check_agent_health(self, binding, pane: TmuxPane) -> AgentHealthReport:
+    def _check_agent_health(self, binding, pane: ManagedProcess) -> AgentHealthReport:
         state = self.health_states.get(binding.short_id)
         if state is None:
             state = AgentHealthState(short_id=binding.short_id)
@@ -174,7 +185,7 @@ class AgentTalkRelay:
         detected_pauses: list[str] = []
         try:
             # Capture last 30 lines for LLM analysis (reduced from 50 to save tokens)
-            recent_output = self.tmux_client.capture_pane(binding.tmux_target, lines=30)
+            recent_output = self.tmux_client.capture_output(binding.tmux_target, lines=30)
             current_fingerprint = output_fingerprint(recent_output)
             detected_errors = detect_errors(recent_output)
             detected_pauses = detect_pause(recent_output)
@@ -282,7 +293,7 @@ class AgentTalkRelay:
             done_marker=message["done_marker"],
         )
         try:
-            baseline = self.tmux_client.capture_pane(binding.tmux_target, lines=500)
+            baseline = self.tmux_client.capture_output(binding.tmux_target, lines=500)
             self.tmux_client.inject_text(
                 binding.tmux_target,
                 payload,
@@ -303,7 +314,7 @@ class AgentTalkRelay:
         completed: list[str] = []
         updates = 0
         for message_id, state in list(self.watch_states.items()):
-            output = self.tmux_client.capture_pane(state.target, lines=800)
+            output = self.tmux_client.capture_output(state.target, lines=800)
             delta = output_delta(state.baseline, output)
             if not delta:
                 continue
@@ -323,7 +334,7 @@ class AgentTalkRelay:
         count = 0
         for binding in self.config.agents:
             try:
-                context = self.tmux_client.capture_pane(binding.tmux_target, lines=lines)
+                context = self.tmux_client.capture_output(binding.tmux_target, lines=lines)
             except Exception:
                 continue
             self.hub_client.update_agent_context(binding.short_id, context)
@@ -331,15 +342,15 @@ class AgentTalkRelay:
         return count
 
 
-class StaticTmuxClient(TmuxClient):
-    def __init__(self, panes: list[TmuxPane]) -> None:
+class StaticTmuxClient(TmuxProcessManager):
+    def __init__(self, panes: list[ManagedProcess]) -> None:
         self._panes = panes
         self.captures: dict[str, str] = {}
 
-    def list_panes(self) -> list[TmuxPane]:
+    def list_processes(self) -> list[ManagedProcess]:
         return self._panes
 
-    def capture_pane(self, target: str, *, lines: int = 300) -> str:
+    def capture_output(self, target: str, *, lines: int = 300) -> str:
         return self.captures.get(target, "")
 
 

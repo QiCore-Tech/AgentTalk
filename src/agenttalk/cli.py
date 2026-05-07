@@ -15,7 +15,7 @@ from agenttalk.hub.app import create_app
 from agenttalk.hub.models import ReceiveMode
 from agenttalk.hub.settings import HubSettings, default_database_path
 from agenttalk.relay import AgentTalkRelay
-from agenttalk.tmux import TmuxClient
+from agenttalk.process_manager import get_process_manager
 
 
 app = typer.Typer(help="AgentTalk CLI.")
@@ -127,9 +127,10 @@ def setup(
 
 @app.command("discover")
 def discover() -> None:
-    panes = TmuxClient().list_panes()
+    manager = get_process_manager()
+    panes = manager.list_processes()
     if not panes:
-        typer.echo("No tmux panes found.")
+        typer.echo("No managed processes found.")
         return
     typer.echo(f"{'#':3} {'kind':10} {'target':14} {'pane':8} workspace")
     for index, pane in enumerate(panes, start=1):
@@ -164,7 +165,7 @@ def register(
         relay = AgentTalkRelay(
             config,
             hub_client=HubClient(config.hub_url, config.token),
-            tmux_client=TmuxClient(),
+            tmux_client=get_process_manager(),
         )
         relay.sync_once()
     typer.echo(f"Registered local binding: {short_id}")
@@ -451,7 +452,7 @@ def daemon_start(
     relay = AgentTalkRelay(
         config,
         hub_client=HubClient(config.hub_url, config.token),
-        tmux_client=TmuxClient(),
+        tmux_client=get_process_manager(),
     )
     if once:
         result = relay.sync_once()

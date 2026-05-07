@@ -27,7 +27,7 @@ def make_store(tmp_path: Path) -> HubStore:
             workspace="/workspace/service-api",
             tmux_target="dev:0.1",
             receive_mode=ReceiveMode.AUTO_SUBMIT,
-            status=AgentStatus.ONLINE,
+            status=AgentStatus.IDLE,
         )
     )
     assert agent is not None

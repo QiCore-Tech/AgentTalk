@@ -4,7 +4,7 @@ from agenttalk.feishu.render import agent_detail_card, agents_card, text_reply, 
 from agenttalk.hub.models import AgentResponse, AgentStatus, ReceiveMode
 
 
-def make_agent(short_id: str = "alice-codex-api", *, status: AgentStatus = AgentStatus.ONLINE) -> AgentResponse:
+def make_agent(short_id: str = "alice-codex-api", *, status: AgentStatus = AgentStatus.IDLE) -> AgentResponse:
     return AgentResponse(
         short_id=short_id,
         machine_id="machine-a",

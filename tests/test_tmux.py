@@ -1,15 +1,21 @@
 from __future__ import annotations
 
-from agenttalk.tmux import detect_agent_kind, parse_list_panes
+from agenttalk.process_manager import _detect_agent_kind as detect_agent_kind
+from agenttalk.process_manager import TmuxProcessManager
+
+
+def parse_list_panes(output: str):
+    mgr = TmuxProcessManager()
+    return mgr._parse_panes(output)
 
 
 def test_parse_list_panes_detects_agent_kinds() -> None:
     output = "\n".join(
         [
-            "dev:0.1|%1|claude|/workspace/a|Claude",
-            "dev:0.2|%2|codex|/workspace/b|Codex",
-            "api:1.0|%3|node|/workspace/c|Gemini CLI",
-            "misc:0.0|%4|zsh|/workspace/d|shell",
+            "dev:0.1|%1|claude|/workspace/a|Claude|1234",
+            "dev:0.2|%2|codex|/workspace/b|Codex|1235",
+            "api:1.0|%3|node|/workspace/c|Gemini CLI|1236",
+            "misc:0.0|%4|zsh|/workspace/d|shell|1237",
         ]
     )
 

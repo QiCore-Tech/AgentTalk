@@ -26,6 +26,9 @@ feishu = [
 llm = [
     "openai>=1.0.0",
 ]
+windows = [
+    "psutil>=5.9.0",
+]
 
 [project.scripts]
 agenttalk = "agenttalk.cli:app"
