@@ -5,6 +5,7 @@ import {
   type Agent,
   type AgentContext,
   type Message,
+  deleteAgent,
   getAgentContext,
   getMessage,
   listAgents,
@@ -12,7 +13,7 @@ import {
 } from './api'
 import './App.css'
 
-type Page = 'agents' | 'context' | 'detail'
+type Page = 'agents' | 'context' | 'detail' | 'quickstart'
 
 function statusLabel(status: Agent['status']) {
   return status.charAt(0).toUpperCase() + status.slice(1)
@@ -88,6 +89,19 @@ function App() {
     }
   }
 
+  async function handleDeleteAgent(shortId: string) {
+    if (!confirm(`确定要删除 agent "${shortId}" 吗？`)) return
+    try {
+      await deleteAgent(shortId)
+      setAgents((current) => current.filter((a) => a.short_id !== shortId))
+      if (selectedId === shortId) {
+        setSelectedId('')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   return (
     <main className="shell">
       <aside className="sidebar">
@@ -112,6 +126,9 @@ function App() {
           >
             Detail
           </button>
+          <button className={page === 'quickstart' ? 'active' : ''} onClick={() => setPage('quickstart')}>
+            Quick Start
+          </button>
         </nav>
         <div className="sidebarStats">
           <span>{agents.length} registered</span>
@@ -122,12 +139,26 @@ function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <h1>{page === 'context' ? 'Context Overview' : page === 'detail' ? 'Agent Detail' : 'Agents'}</h1>
-            <p>Monitor, message, and inspect tmux-hosted agents.</p>
+            <h1>
+              {page === 'context'
+                ? 'Context Overview'
+                : page === 'detail'
+                  ? 'Agent Detail'
+                  : page === 'quickstart'
+                    ? 'Quick Start Guide'
+                    : 'Agents'}
+            </h1>
+            <p>
+              {page === 'quickstart'
+                ? 'Learn how to register and manage agents'
+                : 'Monitor, message, and inspect tmux-hosted agents.'}
+            </p>
           </div>
-          <button className="primary" onClick={refreshAgents}>
-            Refresh
-          </button>
+          {page !== 'quickstart' && (
+            <button className="primary" onClick={refreshAgents}>
+              Refresh
+            </button>
+          )}
         </header>
         {error ? <div className="error">{error}</div> : null}
 
@@ -146,6 +177,7 @@ function App() {
             onSelect={setSelectedId}
             onOpenDetail={() => setPage('detail')}
             onSend={handleSend}
+            onDelete={handleDeleteAgent}
           />
         )}
 
@@ -155,6 +187,7 @@ function App() {
             context={contexts[selectedAgent.short_id]}
             messages={messages.filter((message) => message.target === selectedAgent.short_id)}
             onSend={handleSend}
+            onDelete={handleDeleteAgent}
           />
         )}
 
@@ -168,6 +201,8 @@ function App() {
             }}
           />
         )}
+
+        {page === 'quickstart' && <QuickStart />}
       </section>
     </main>
   )
@@ -187,6 +222,7 @@ interface AgentsHomeProps {
   onSelect: (value: string) => void
   onOpenDetail: () => void
   onSend: (agent: Agent, body: string, watch: boolean) => Promise<void>
+  onDelete: (shortId: string) => void
 }
 
 function AgentsHome(props: AgentsHomeProps) {
@@ -222,6 +258,7 @@ function AgentsHome(props: AgentsHomeProps) {
               <th>Workspace</th>
               <th>Status</th>
               <th>Mode</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -239,6 +276,17 @@ function AgentsHome(props: AgentsHomeProps) {
                   <StatusBadge status={agent.status} />
                 </td>
                 <td>{agent.receive_mode}</td>
+                <td>
+                  <button
+                    className="danger small"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      props.onDelete(agent.short_id)
+                    }}
+                  >
+                    Delete
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -255,6 +303,12 @@ function AgentsHome(props: AgentsHomeProps) {
             <button className="secondary full" onClick={props.onOpenDetail}>
               View Terminal
             </button>
+            <button
+              className="danger full"
+              onClick={() => props.onDelete(props.selectedAgent!.short_id)}
+            >
+              Delete Agent
+            </button>
             <RecentMessages messages={props.messages.filter((message) => message.target === props.selectedAgent?.short_id)} />
           </>
         ) : (
@@ -270,17 +324,22 @@ function AgentDetail({
   context,
   messages,
   onSend,
+  onDelete,
 }: {
   agent: Agent
   context?: AgentContext
   messages: Message[]
   onSend: (agent: Agent, body: string, watch: boolean) => Promise<void>
+  onDelete: (shortId: string) => void
 }) {
   return (
     <div className="detailGrid">
       <section className="panel detailMeta">
         <AgentSummary agent={agent} />
         <MessageBox agent={agent} onSend={onSend} />
+        <button className="danger full" onClick={() => onDelete(agent.short_id)}>
+          Delete Agent
+        </button>
         <RecentMessages messages={messages} />
       </section>
       <section className="panel terminalPanel">
@@ -314,7 +373,7 @@ function ContextOverview({
             <div>
               <h2>{agent.short_id}</h2>
               <p>
-                {agent.kind} · {agent.owner} · {agent.workspace}
+                {agent.kind} &middot; {agent.owner} &middot; {agent.workspace}
               </p>
             </div>
             <button className="secondary" onClick={() => onSelect(agent.short_id)}>
@@ -328,6 +387,174 @@ function ContextOverview({
   )
 }
 
+function QuickStart() {
+  const hubUrl = window.location.origin
+  const token = import.meta.env.VITE_AGENTTALK_TOKEN || 'your-token'
+
+  return (
+    <div className="quickStart">
+      <section className="panel">
+        <h2>Agent 端快速开始指南</h2>
+        <p>在您的开发机器上注册 agent，使其可以被 Hub 管理和远程控制。</p>
+
+        <h3>1. 前置要求</h3>
+        <ul>
+          <li>Python 3.12+</li>
+          <li>tmux（agent 必须运行在 tmux pane 中）</li>
+          <li>Git（克隆代码仓库）</li>
+        </ul>
+
+        <h3>2. 安装 AgentTalk</h3>
+        <pre className="codeBlock">
+{`# 克隆仓库
+git clone https://git.qicore.tech/wenda.sheng/soha_agentTalk
+cd agenttalk
+
+# 安装依赖（使用 uv 或 pip）
+uv sync --extra feishu
+# 或
+pip install -e ".[feishu]"`}
+        </pre>
+
+        <h3>3. 配置 Hub 连接</h3>
+        <pre className="codeBlock">
+{`# 设置 Hub 地址和 Token
+agenttalk setup ${hubUrl} --token ${token}`}
+        </pre>
+
+        <h3>4. 发现 tmux pane</h3>
+        <pre className="codeBlock">
+{`# 查看可用的 tmux pane
+agenttalk discover
+
+# 或使用脚本
+scripts/start-client.sh --discover`}
+        </pre>
+
+        <h3>5. 注册 Agent</h3>
+        <pre className="codeBlock">
+{`# 方法 1：使用 CLI
+agenttalk register \\
+  --short-id my-agent-001 \\
+  --tmux-target dev:0.1 \\
+  --owner $(whoami) \\
+  --kind codex \\
+  --workspace /path/to/project
+
+# 方法 2：使用启动脚本
+scripts/start-client.sh \\
+  --hub-url ${hubUrl} \\
+  --token ${token} \\
+  --short-id my-agent-001 \\
+  --tmux-target dev:0.1 \\
+  --owner $(whoami) \\
+  --kind codex \\
+  --workspace /path/to/project`}
+        </pre>
+
+        <h3>6. 启动 Relay（守护进程）</h3>
+        <pre className="codeBlock">
+{`# 启动后台 relay，定期同步 agent 状态
+agenttalk daemon start
+
+# 或一次性同步
+agenttalk daemon start --once
+
+# 使用脚本启动
+scripts/start-client.sh \\
+  --hub-url ${hubUrl} \\
+  --token ${token} \\
+  --short-id my-agent-001 \\
+  --tmux-target dev:0.1`}
+        </pre>
+
+        <h3>7. 常用命令</h3>
+        <pre className="codeBlock">
+{`# 列出所有 agent
+agenttalk list
+
+# 查看 agent 状态
+agenttalk status <message-id>
+
+# 发送消息给 agent
+agenttalk send --to my-agent-001 --message "检查接口契约"
+
+# 删除 agent 注册
+agenttalk unregister --short-id my-agent-001
+
+# 修改接收模式
+agenttalk mode my-agent-001 auto_submit
+agenttalk mode my-agent-001 paste_only`}
+        </pre>
+
+        <h3>8. 飞书机器人命令</h3>
+        <p>在飞书中与机器人交互：</p>
+        <pre className="codeBlock">
+{`/help                    # 显示帮助
+/agents                  # 列出所有 agent
+/agents online           # 列出在线 agent
+/agent <agent-id>        # 查看 agent 详情
+/context <agent-id>      # 查看 agent 上下文
+/send <agent-id> <msg>   # 发送消息
+/status <message-id>     # 查看消息状态
+/response <message-id>   # 查看响应内容`}
+        </pre>
+
+        <h3>9. 配置说明</h3>
+        <table className="configTable">
+          <thead>
+            <tr>
+              <th>参数</th>
+              <th>说明</th>
+              <th>示例</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>short-id</td>
+              <td>全局唯一 agent ID</td>
+              <td>alice-codex-api</td>
+            </tr>
+            <tr>
+              <td>tmux-target</td>
+              <td>tmux 目标 pane</td>
+              <td>dev:0.1</td>
+            </tr>
+            <tr>
+              <td>owner</td>
+              <td>所有者标识</td>
+              <td>alice</td>
+            </tr>
+            <tr>
+              <td>kind</td>
+              <td>Agent 类型</td>
+              <td>codex, claude, cursor</td>
+            </tr>
+            <tr>
+              <td>workspace</td>
+              <td>工作目录</td>
+              <td>/workspace/service-api</td>
+            </tr>
+            <tr>
+              <td>receive-mode</td>
+              <td>消息接收模式</td>
+              <td>auto_submit / paste_only</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>10. 注意事项</h3>
+        <ul>
+          <li>Agent 必须运行在 tmux pane 中才能接收远程消息</li>
+          <li>auto_submit 模式会自动提交消息，paste_only 仅粘贴不提交</li>
+          <li>Relay 需要保持运行才能维持 agent 在线状态</li>
+          <li>每个 agent 的 short-id 必须全局唯一</li>
+        </ul>
+      </section>
+    </div>
+  )
+}
+
 function AgentSummary({ agent }: { agent: Agent }) {
   return (
     <div className="summary">
@@ -335,7 +562,7 @@ function AgentSummary({ agent }: { agent: Agent }) {
         <div>
           <h2>{agent.short_id}</h2>
           <p>
-            {agent.owner} · {agent.kind}
+            {agent.owner} &middot; {agent.kind}
           </p>
         </div>
         <StatusBadge status={agent.status} />

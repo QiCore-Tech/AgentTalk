@@ -7,9 +7,10 @@ from pydantic import BaseModel, Field
 
 class AgentStatus(StrEnum):
     OFFLINE = "offline"
-    ONLINE = "online"
-    ACTIVE = "active"
+    IDLE = "idle"
     WORKING = "working"
+    CRASHED = "crashed"
+    ERROR = "error"
     STALE = "stale"
 
 
@@ -66,7 +67,25 @@ class AgentUpsertRequest(BaseModel):
     workspace: str = Field(default="", max_length=1000)
     tmux_target: str = Field(min_length=1, max_length=160)
     receive_mode: ReceiveMode = ReceiveMode.AUTO_SUBMIT
-    status: AgentStatus = AgentStatus.ONLINE
+    status: AgentStatus = AgentStatus.IDLE
+
+
+class AgentHealthReport(BaseModel):
+    short_id: str = Field(min_length=1, max_length=120)
+    pane_alive: bool = True
+    process_alive: bool = True
+    recent_output: str = Field(default="", max_length=2000)
+    output_fingerprint: str = Field(default="", max_length=64)
+    detected_errors: list[str] = Field(default_factory=list)
+    status: AgentStatus = AgentStatus.IDLE
+
+
+class AgentAlert(BaseModel):
+    short_id: str
+    alert_type: str
+    message: str
+    created_at: str
+    acknowledged: bool = False
 
 
 class AgentResponse(BaseModel):
@@ -80,6 +99,8 @@ class AgentResponse(BaseModel):
     status: AgentStatus
     updated_at: str
     relay_last_seen_at: str | None = None
+    health_output_fingerprint: str | None = None
+    health_detected_errors: list[str] = Field(default_factory=list)
 
 
 class AgentListResponse(BaseModel):

@@ -1,5 +1,8 @@
 FROM node:22-bookworm AS web-build
 
+ARG VITE_AGENTTALK_TOKEN
+ENV VITE_AGENTTALK_TOKEN=${VITE_AGENTTALK_TOKEN}
+
 WORKDIR /app/web
 COPY web/package*.json ./
 RUN npm ci

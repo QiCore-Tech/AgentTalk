@@ -34,7 +34,7 @@ export interface AgentContext {
 }
 
 const API_BASE = import.meta.env.VITE_AGENTTALK_API_BASE || ''
-const TOKEN = import.meta.env.VITE_AGENTTALK_TOKEN || 'dev-token'
+const TOKEN = import.meta.env.VITE_AGENTTALK_TOKEN || ''
 
 function headers() {
   return {
@@ -72,4 +72,10 @@ export async function sendMessage(target: string, body: string, sender = 'web'):
 
 export async function getMessage(messageId: string): Promise<Message> {
   return request<Message>(`/api/messages/${encodeURIComponent(messageId)}`)
+}
+
+export async function deleteAgent(shortId: string): Promise<void> {
+  await request<void>(`/api/agents/${encodeURIComponent(shortId)}`, {
+    method: 'DELETE',
+  })
 }

@@ -298,6 +298,25 @@ textarea {
   background: #e3ebf2;
 }
 
+.danger {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  border-radius: 7px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.danger:hover {
+  background: #fecaca;
+}
+
+.danger.small {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
 .full {
   width: 100%;
 }
@@ -310,6 +329,11 @@ textarea {
   padding: 4px 9px;
   font-size: 12px;
   font-weight: 800;
+}
+
+.status.idle {
+  background: #e8f5e9;
+  color: #2e7d32;
 }
 
 .status.online {
@@ -327,14 +351,26 @@ textarea {
   color: #8a5a00;
 }
 
+.status.crashed {
+  background: #ffebee;
+  color: #c62828;
+  border: 1px solid #ef9a9a;
+}
+
+.status.error {
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffcc80;
+}
+
 .status.stale {
   background: #eceff3;
   color: #576579;
 }
 
 .status.offline {
-  background: #ffe5e5;
-  color: #a13636;
+  background: #f5f5f5;
+  color: #757575;
 }
 
 .status.neutral {
@@ -410,6 +446,76 @@ textarea {
   padding: 14px;
   display: grid;
   gap: 12px;
+}
+
+.quickStart {
+  max-width: 900px;
+}
+
+.quickStart h2 {
+  font-size: 20px;
+  margin-bottom: 16px;
+  color: #101828;
+}
+
+.quickStart h3 {
+  font-size: 16px;
+  margin-top: 24px;
+  margin-bottom: 12px;
+  color: #1f2937;
+}
+
+.quickStart p {
+  margin-bottom: 12px;
+  line-height: 1.6;
+}
+
+.quickStart ul {
+  margin-bottom: 16px;
+  padding-left: 20px;
+}
+
+.quickStart li {
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+.codeBlock {
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.configTable {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.configTable th,
+.configTable td {
+  border: 1px solid #e5e7eb;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.configTable th {
+  background: #f9fafb;
+  font-weight: 700;
+  color: #374151;
+}
+
+.configTable td {
+  color: #4b5563;
 }
 
 .empty,

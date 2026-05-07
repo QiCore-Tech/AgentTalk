@@ -11,8 +11,10 @@ from fastapi.responses import JSONResponse
 
 from agenttalk.hub.errors import api_error
 from agenttalk.hub.models import (
-    AgentListResponse,
+    AgentAlert,
     AgentContextUpdateRequest,
+    AgentHealthReport,
+    AgentListResponse,
     AgentStatus,
     AgentUpsertRequest,
     ErrorResponse,
@@ -37,14 +39,18 @@ def create_app(settings: HubSettings) -> FastAPI:
         heartbeat_ttl_seconds=settings.heartbeat_ttl_seconds,
     )
 
+    feishu_messenger: LarkMessenger | None = None
+    feishu_service: FeishuAgentTalkService | None = None
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        nonlocal feishu_messenger, feishu_service
         app.state.settings = settings
         app.state.store = store
         if settings.feishu_enable:
-            messenger = LarkMessenger(settings.feishu_app_id, settings.feishu_app_secret)
-            service = FeishuAgentTalkService(store, web_base_url=settings.public_base_url)
-            handler = FeishuEventHandler(service, messenger)
+            feishu_messenger = LarkMessenger(settings.feishu_app_id, settings.feishu_app_secret)
+            feishu_service = FeishuAgentTalkService(store, web_base_url=settings.public_base_url)
+            handler = FeishuEventHandler(feishu_service, feishu_messenger)
             worker = FeishuLongConnectionWorker(
                 app_id=settings.feishu_app_id,
                 app_secret=settings.feishu_app_secret,
@@ -90,6 +96,18 @@ def create_app(settings: HubSettings) -> FastAPI:
 
     def get_store() -> HubStore:
         return store
+
+    def maybe_alert_feishu(short_id: str, alert_type: str, message: str, owner: str = "") -> None:
+        if not settings.feishu_enable or feishu_messenger is None or feishu_service is None:
+            return
+        try:
+            feishu_service.send_alert(
+                feishu_messenger, short_id, alert_type, message,
+                owner=owner, chat_id=settings.feishu_alert_chat_id,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(f"Feishu alert failed: {exc}")
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -175,6 +193,74 @@ def create_app(settings: HubSettings) -> FastAPI:
         if agent is None:
             raise api_error(404, "agent_not_found", f"Agent not found: {short_id}")
         return agent
+
+    @app.delete(
+        "/api/agents/{short_id}",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def delete_agent(short_id: str, hub_store: HubStore = Depends(get_store)):
+        agent = hub_store.get_agent(short_id)
+        if agent is None:
+            raise api_error(404, "agent_not_found", f"Agent not found: {short_id}")
+        hub_store.delete_agent(short_id)
+        return {"deleted": True, "short_id": short_id}
+
+    @app.post(
+        "/api/agents/{short_id}/health",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def report_agent_health(
+        short_id: str,
+        report: AgentHealthReport,
+        hub_store: HubStore = Depends(get_store),
+    ):
+        agent = hub_store.get_agent(short_id)
+        if agent is None:
+            raise api_error(404, "agent_not_found", f"Agent not found: {short_id}")
+        
+        previous_status = agent.status
+        updated = hub_store.report_health(report)
+        
+        # Trigger alerts on status degradation
+        if report.status in (AgentStatus.CRASHED, AgentStatus.ERROR) and previous_status not in (AgentStatus.CRASHED, AgentStatus.ERROR):
+            alert_type = "crashed" if report.status == AgentStatus.CRASHED else "error"
+            owner_info = f" 创建者: {agent.owner}" if agent.owner else ""
+            if report.detected_errors:
+                alert_msg = f"Agent {short_id}{owner_info} 状态异常: {report.status.value}\n检测到错误: {', '.join(report.detected_errors[:5])}"
+            else:
+                alert_msg = f"Agent {short_id}{owner_info} 状态异常: {report.status.value}\n进程或 pane 已停止"
+            hub_store.create_alert(short_id, alert_type, alert_msg)
+            maybe_alert_feishu(short_id, alert_type, alert_msg, agent.owner)
+        
+        return updated
+
+    @app.get(
+        "/api/agents/{short_id}/alerts",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}},
+    )
+    def list_agent_alerts(
+        short_id: str,
+        unacknowledged_only: bool = False,
+        hub_store: HubStore = Depends(get_store),
+    ):
+        return {"alerts": hub_store.list_alerts(short_id=short_id, unacknowledged_only=unacknowledged_only)}
+
+    @app.post(
+        "/api/agents/{short_id}/alerts/{alert_id}/acknowledge",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def acknowledge_alert(
+        short_id: str,
+        alert_id: int,
+        hub_store: HubStore = Depends(get_store),
+    ):
+        if not hub_store.acknowledge_alert(alert_id):
+            raise api_error(404, "alert_not_found", f"Alert not found: {alert_id}")
+        return {"acknowledged": True, "alert_id": alert_id}
 
     @app.post(
         "/api/messages",

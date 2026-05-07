@@ -80,5 +80,19 @@ class FeishuAgentTalkService:
                 if response is None:
                     return text_reply(f"Message not found: {message_id}")
                 return text_reply(truncate(response.response_text or "No response captured.", 4000))
+            case FeishuCommandKind.UNKNOWN:
+                return help_reply()
             case _:
-                return text_reply(command.error or "Unknown command. Try /help.")
+                return help_reply()
+
+    def send_alert(self, messenger, short_id: str, alert_type: str, message: str, owner: str = "", chat_id: str = "") -> None:
+        from agenttalk.feishu.render import alert_card
+        reply = alert_card(short_id, alert_type, message, web_base_url=self.web_base_url, owner=owner)
+        if chat_id:
+            messenger.send_to_chat(chat_id, reply)
+        else:
+            # Fallback: try to send without specific chat (may fail silently)
+            try:
+                messenger.send_reply("", reply, receive_id_type="chat_id")
+            except Exception:
+                pass

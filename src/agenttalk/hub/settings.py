@@ -14,6 +14,7 @@ class HubSettings:
     feishu_enable: bool = False
     feishu_app_id: str = ""
     feishu_app_secret: str = ""
+    feishu_alert_chat_id: str = ""
 
 
 def default_database_path() -> Path:

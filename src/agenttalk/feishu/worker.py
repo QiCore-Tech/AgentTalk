@@ -67,6 +67,11 @@ class LarkMessenger:
         if not response.success():
             raise RuntimeError(f"Feishu send failed: code={response.code}, msg={response.msg}")
 
+    def send_to_chat(self, chat_id: str, reply: FeishuReply) -> None:
+        if not chat_id:
+            raise RuntimeError("chat_id is required for send_to_chat")
+        self.send_reply(chat_id, reply, receive_id_type="chat_id")
+
 
 class FeishuLongConnectionWorker:
     def __init__(self, *, app_id: str, app_secret: str, handler: FeishuEventHandler) -> None:
@@ -82,7 +87,12 @@ class FeishuLongConnectionWorker:
         self._thread.start()
 
     def run_forever(self) -> None:
+        import asyncio
+        import nest_asyncio
         import lark_oapi as lark
+
+        # Apply nest_asyncio to allow nested event loops
+        nest_asyncio.apply()
 
         def on_message(data: Any) -> None:
             try:
@@ -130,9 +140,16 @@ def extract_text_from_message(message: Any) -> str:
     if isinstance(content, str):
         try:
             parsed = json.loads(content)
-            return str(parsed.get("text", content)).strip()
+            text = str(parsed.get("text", content)).strip()
         except json.JSONDecodeError:
-            return content.strip()
-    if isinstance(content, dict):
-        return str(content.get("text", "")).strip()
-    return str(content).strip()
+            text = content.strip()
+    elif isinstance(content, dict):
+        text = str(content.get("text", "")).strip()
+    else:
+        text = str(content).strip()
+    
+    # Strip @mention prefix (Feishu format: "@_user_1 message" or "@bot_name message")
+    import re
+    text = re.sub(r"^@\S+\s*", "", text).strip()
+    
+    return text

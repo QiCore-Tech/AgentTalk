@@ -64,8 +64,9 @@ def serve_hub(
         feishu_enable=resolved_feishu_enable,
         feishu_app_id=resolved_feishu_app_id,
         feishu_app_secret=resolved_feishu_app_secret,
+        feishu_alert_chat_id=os.environ.get("FEISHU_ALERT_CHAT_ID", ""),
     )
-    uvicorn.run(create_app(settings), host=host, port=port)
+    uvicorn.run(create_app(settings), host=host, port=port, loop="asyncio")
 
 
 @app.command("list")
@@ -165,6 +166,43 @@ def register(
         )
         relay.sync_once()
     typer.echo(f"Registered local binding: {short_id}")
+
+
+@app.command("unregister")
+def unregister(
+    short_id: Annotated[str, typer.Option(help="Agent short ID to remove.")],
+    hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
+    token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    resolved_token = token or config.token or os.environ.get("AGENTTALK_TOKEN")
+    if not resolved_token:
+        raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
+    resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    
+    # Remove from Hub
+    response = httpx.delete(
+        f"{resolved_hub_url.rstrip('/')}/api/agents/{short_id}",
+        headers=auth_headers(resolved_token),
+        timeout=10,
+    )
+    if response.status_code == 404:
+        typer.echo(f"Agent not found on Hub: {short_id}")
+    elif response.status_code >= 400:
+        typer.echo(response.text, err=True)
+        raise typer.Exit(1)
+    else:
+        typer.echo(f"Removed from Hub: {short_id}")
+    
+    # Remove from local config
+    new_agents = [a for a in config.agents if a.short_id != short_id]
+    if len(new_agents) != len(config.agents):
+        config = config.model_copy(update={"agents": new_agents})
+        save_config(config, config_path)
+        typer.echo(f"Removed local binding: {short_id}")
+    else:
+        typer.echo(f"Local binding not found: {short_id}")
 
 
 @app.command("rename")

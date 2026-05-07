@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from agenttalk.hub.models import (
+    AgentAlert,
     AgentContextResponse,
+    AgentHealthReport,
     AgentResponse,
     AgentStatus,
     AgentContextUpdateRequest,
@@ -77,12 +79,15 @@ class HubStore:
                     short_id TEXT PRIMARY KEY,
                     machine_id TEXT NOT NULL,
                     owner TEXT NOT NULL,
+                    owner_open_id TEXT DEFAULT '',
                     kind TEXT NOT NULL,
                     workspace TEXT NOT NULL,
                     tmux_target TEXT NOT NULL,
                     receive_mode TEXT NOT NULL,
                     status TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    health_output_fingerprint TEXT DEFAULT '',
+                    health_detected_errors TEXT DEFAULT '',
                     FOREIGN KEY(machine_id) REFERENCES relays(machine_id)
                 );
 
@@ -118,6 +123,18 @@ class HubStore:
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(short_id) REFERENCES agents(short_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS agent_alerts (
+                    alert_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    short_id TEXT NOT NULL,
+                    alert_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    acknowledged INTEGER DEFAULT 0
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_alerts_short_id ON agent_alerts(short_id);
+                CREATE INDEX IF NOT EXISTS idx_alerts_created ON agent_alerts(created_at);
                 """
             )
 
@@ -200,6 +217,31 @@ class HubStore:
             )
         return self.get_agent(request.short_id)
 
+    def report_health(self, report: AgentHealthReport) -> AgentResponse | None:
+        agent = self.get_agent(report.short_id)
+        if agent is None:
+            return None
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE agents SET
+                    status = ?,
+                    updated_at = ?,
+                    health_output_fingerprint = ?,
+                    health_detected_errors = ?
+                WHERE short_id = ?
+                """,
+                (
+                    report.status.value,
+                    now,
+                    report.output_fingerprint,
+                    ",".join(report.detected_errors),
+                    report.short_id,
+                ),
+            )
+        return self.get_agent(report.short_id)
+
     def list_agents(self, filters: AgentFilters | None = None) -> list[AgentResponse]:
         filters = filters or AgentFilters()
         clauses: list[str] = []
@@ -224,6 +266,8 @@ class HubStore:
                     a.receive_mode,
                     a.status,
                     a.updated_at,
+                    a.health_output_fingerprint,
+                    a.health_detected_errors,
                     r.last_seen_at AS relay_last_seen_at
                 FROM agents a
                 LEFT JOIN relays r ON r.machine_id = a.machine_id
@@ -251,6 +295,8 @@ class HubStore:
                     a.receive_mode,
                     a.status,
                     a.updated_at,
+                    a.health_output_fingerprint,
+                    a.health_detected_errors,
                     r.last_seen_at AS relay_last_seen_at
                 FROM agents a
                 LEFT JOIN relays r ON r.machine_id = a.machine_id
@@ -261,6 +307,13 @@ class HubStore:
         if row is None:
             return None
         return self._agent_from_row(row)
+
+    def delete_agent(self, short_id: str) -> bool:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM agent_contexts WHERE short_id = ?", (short_id,))
+            conn.execute("DELETE FROM agent_alerts WHERE short_id = ?", (short_id,))
+            cursor = conn.execute("DELETE FROM agents WHERE short_id = ?", (short_id,))
+            return cursor.rowcount > 0
 
     def create_message(self, request: MessageCreateRequest) -> tuple[MessageResponse | None, str | None]:
         target = self.get_agent(request.to)
@@ -416,10 +469,77 @@ class HubStore:
             return AgentContextResponse(short_id=short_id, context="", updated_at=None)
         return AgentContextResponse(short_id=short_id, context=str(row["context"]), updated_at=str(row["updated_at"]))
 
+    def create_alert(self, short_id: str, alert_type: str, message: str) -> AgentAlert:
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_alerts (short_id, alert_type, message, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (short_id, alert_type, message, now),
+            )
+        return AgentAlert(short_id=short_id, alert_type=alert_type, message=message, created_at=now)
+
+    def list_alerts(self, short_id: str | None = None, unacknowledged_only: bool = False) -> list[AgentAlert]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        if short_id:
+            clauses.append("short_id = ?")
+            values.append(short_id)
+        if unacknowledged_only:
+            clauses.append("acknowledged = 0")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT short_id, alert_type, message, created_at, acknowledged
+                FROM agent_alerts
+                {where}
+                ORDER BY created_at DESC
+                LIMIT 100
+                """,
+                values,
+            ).fetchall()
+        return [
+            AgentAlert(
+                short_id=str(row["short_id"]),
+                alert_type=str(row["alert_type"]),
+                message=str(row["message"]),
+                created_at=str(row["created_at"]),
+                acknowledged=bool(row["acknowledged"]),
+            )
+            for row in rows
+        ]
+
+    def acknowledge_alert(self, alert_id: int) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE agent_alerts SET acknowledged = 1 WHERE alert_id = ?",
+                (alert_id,),
+            )
+            return cursor.rowcount > 0
+
+    def set_owner_open_id(self, short_id: str, open_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE agents SET owner_open_id = ? WHERE short_id = ?",
+                (open_id, short_id),
+            )
+
+    def get_owner_open_id(self, short_id: str) -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT owner_open_id FROM agents WHERE short_id = ?",
+                (short_id,),
+            ).fetchone()
+        return str(row["owner_open_id"]) if row else ""
+
     def _agent_from_row(self, row: sqlite3.Row) -> AgentResponse:
         stored_status = AgentStatus(str(row["status"]))
         relay_last_seen_at = row["relay_last_seen_at"]
         status = self._derive_status(stored_status=stored_status, relay_last_seen_at=relay_last_seen_at)
+        errors_str = str(row["health_detected_errors"] or "")
         return AgentResponse(
             short_id=str(row["short_id"]),
             machine_id=str(row["machine_id"]),
@@ -431,6 +551,8 @@ class HubStore:
             status=status,
             updated_at=str(row["updated_at"]),
             relay_last_seen_at=str(relay_last_seen_at) if relay_last_seen_at is not None else None,
+            health_output_fingerprint=str(row["health_output_fingerprint"] or ""),
+            health_detected_errors=errors_str.split(",") if errors_str else [],
         )
 
     def _derive_status(self, *, stored_status: AgentStatus, relay_last_seen_at: str | None) -> AgentStatus:

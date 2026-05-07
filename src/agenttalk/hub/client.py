@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 
 from agenttalk.config import AgentBinding, AgentTalkConfig
-from agenttalk.hub.models import AgentStatus, MessageStatus
+from agenttalk.hub.models import AgentHealthReport, AgentStatus, MessageStatus
 
 
 class HubClient:
@@ -51,6 +51,15 @@ class HubClient:
                 "receive_mode": binding.receive_mode.value,
                 "status": status.value,
             },
+            timeout=10,
+        )
+        response.raise_for_status()
+
+    def report_health(self, report: AgentHealthReport) -> None:
+        response = httpx.post(
+            f"{self.hub_url}/api/agents/{report.short_id}/health",
+            headers=self.headers,
+            json=report.model_dump(),
             timeout=10,
         )
         response.raise_for_status()

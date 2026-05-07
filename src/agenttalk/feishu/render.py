@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from agenttalk.hub.models import AgentResponse, MessageResponse
@@ -26,14 +27,27 @@ def help_reply() -> FeishuReply:
     return text_reply(
         "\n".join(
             [
-                "AgentTalk commands:",
-                "/agents",
-                "/agents online",
-                "/agent <agent-id>",
-                "/context <agent-id>",
-                "/send <agent-id> <message>",
-                "/status <message-id>",
-                "/response <message-id>",
+                "AgentTalk 飞书机器人使用指南：",
+                "",
+                "【查看 Agent 列表】",
+                "/agents              # 列出所有已注册的 agent",
+                "/agents online       # 仅列出在线的 agent",
+                "",
+                "【查看 Agent 详情】",
+                "/agent <agent-id>    # 查看指定 agent 的详细信息",
+                "/context <agent-id>  # 查看指定 agent 的最近上下文",
+                "",
+                "【向 Agent 发送消息】",
+                "/send <agent-id> <消息内容>",
+                "  例如：/send demo-agent-001 请检查接口契约",
+                "  说明：消息会投递到 agent 所在的 tmux pane",
+                "",
+                "【查看消息状态】",
+                "/status <message-id>  # 查看消息投递状态",
+                "/response <message-id> # 查看 agent 的回复内容",
+                "",
+                "【Web 控制台】",
+                "访问 Web UI 获取更完整的 agent 管理功能",
             ]
         )
     )
@@ -129,3 +143,47 @@ def message_status_text(message: MessageResponse) -> FeishuReply:
     if message.error:
         lines.append(f"error: {message.error}")
     return text_reply("\n".join(lines))
+
+
+def alert_card(short_id: str, alert_type: str, message: str, *, web_base_url: str = "", owner: str = "") -> FeishuReply:
+    color = "red" if alert_type in ("crashed", "error") else "orange"
+    owner_line = f"\n**创建者:** {owner}" if owner else ""
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**Agent:** `{short_id}`{owner_line}\n**类型:** {alert_type}\n**时间:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            },
+        },
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**详情:**\n```\n{truncate(message, 800)}\n```",
+            },
+        },
+    ]
+    actions: list[dict[str, Any]] = []
+    if web_base_url:
+        actions.append(
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "查看 Web 控制台"},
+                "type": "primary",
+                "url": f"{web_base_url.rstrip('/')}/",
+            }
+        )
+    if actions:
+        elements.append({"tag": "action", "actions": actions})
+    return FeishuReply(
+        "interactive",
+        {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": f"AgentTalk 告警: {short_id}"},
+                "template": color,
+            },
+            "elements": elements,
+        },
+    )

@@ -1,6 +1,9 @@
 services:
   agenttalk-hub:
-    build: .
+    build:
+      context: .
+      args:
+        VITE_AGENTTALK_TOKEN: "${AGENTTALK_TOKEN}"
     container_name: agenttalk-hub
     restart: unless-stopped
     ports:
@@ -14,6 +17,7 @@ services:
       FEISHU_ENABLE: "${FEISHU_ENABLE:-0}"
       FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
       FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
+      FEISHU_ALERT_CHAT_ID: "${FEISHU_ALERT_CHAT_ID:-}"
     volumes:
       - agenttalk-data:/data
 
