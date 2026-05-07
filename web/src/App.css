@@ -4,6 +4,7 @@
   min-height: 100vh;
 }
 
+/* ===== Sidebar ===== */
 .sidebar {
   background: #172033;
   color: #d7dee9;
@@ -73,6 +74,7 @@ nav button:hover:not(:disabled) {
   font-size: 13px;
 }
 
+/* ===== Workspace ===== */
 .workspace {
   min-width: 0;
   padding: 22px;
@@ -86,9 +88,7 @@ nav button:hover:not(:disabled) {
   margin-bottom: 18px;
 }
 
-h1,
-h2,
-p {
+h1, h2, p {
   margin: 0;
 }
 
@@ -113,6 +113,7 @@ h2 {
   font-size: 13px;
 }
 
+/* ===== Layout ===== */
 .agentsLayout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 380px;
@@ -139,9 +140,8 @@ h2 {
   border-bottom: 1px solid #e6ebf1;
 }
 
-input,
-select,
-textarea {
+/* ===== Form Elements ===== */
+input, select, textarea {
   width: 100%;
   border: 1px solid #cfd8e3;
   border-radius: 7px;
@@ -149,23 +149,22 @@ textarea {
   color: #172033;
   padding: 9px 10px;
   outline: none;
+  font-size: 16px; /* Prevent zoom on iOS */
 }
 
-input:focus,
-select:focus,
-textarea:focus {
+input:focus, select:focus, textarea:focus {
   border-color: #2f9f83;
   box-shadow: 0 0 0 3px rgba(47, 159, 131, 0.14);
 }
 
+/* ===== Table (Desktop) ===== */
 table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
 }
 
-th,
-td {
+th, td {
   border-bottom: 1px solid #edf1f5;
   padding: 10px 12px;
   text-align: left;
@@ -183,22 +182,88 @@ tr {
   cursor: pointer;
 }
 
-tbody tr:hover,
-tbody tr.selected {
+tbody tr:hover, tbody tr.selected {
   background: #eff9f5;
 }
 
-.strong {
-  color: #0f172a;
+/* ===== Cards (Mobile) ===== */
+.agentCards {
+  display: none;
+}
+
+.agentCard {
+  background: #ffffff;
+  border: 1px solid #dfe5ec;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.agentCard:active {
+  transform: scale(0.98);
+  background: #f8fafc;
+}
+
+.agentCard.selected {
+  border-color: #31b58f;
+  background: #f0fdf9;
+}
+
+.agentCardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.agentCardTitle {
   font-weight: 700;
+  font-size: 16px;
+  color: #0f172a;
 }
 
-.mono,
-.contextBlock,
-.terminal {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+.agentCardMeta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  font-size: 13px;
+  color: #657386;
 }
 
+.agentCardMetaItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agentCardMetaLabel {
+  font-size: 11px;
+  color: #98a5b7;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.agentCardActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f3f6;
+}
+
+.agentCardActions button {
+  flex: 1;
+  padding: 10px;
+  border-radius: 8px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* ===== Preview ===== */
 .preview {
   padding: 14px;
   display: grid;
@@ -212,11 +277,7 @@ tbody tr.selected {
   gap: 12px;
 }
 
-.summaryTop,
-.panelHeader,
-.contextHeader,
-.buttonRow,
-.messageRow {
+.summaryTop, .panelHeader, .contextHeader, .buttonRow, .messageRow {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -248,6 +309,7 @@ dd {
   font-size: 13px;
 }
 
+/* ===== Message Box ===== */
 .messageBox {
   display: grid;
   gap: 10px;
@@ -270,13 +332,15 @@ textarea {
   resize: vertical;
 }
 
-.primary,
-.secondary {
+/* ===== Buttons ===== */
+.primary, .secondary, .danger {
   border: 1px solid transparent;
   border-radius: 7px;
   padding: 9px 12px;
   font-size: 13px;
   font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
 }
 
 .primary {
@@ -286,6 +350,10 @@ textarea {
 
 .primary:hover {
   background: #1b705e;
+}
+
+.primary:active {
+  transform: scale(0.97);
 }
 
 .secondary {
@@ -298,18 +366,22 @@ textarea {
   background: #e3ebf2;
 }
 
+.secondary:active {
+  transform: scale(0.97);
+}
+
 .danger {
   background: #fee2e2;
   color: #991b1b;
   border: 1px solid #fecaca;
-  border-radius: 7px;
-  padding: 9px 12px;
-  font-size: 13px;
-  font-weight: 700;
 }
 
 .danger:hover {
   background: #fecaca;
+}
+
+.danger:active {
+  transform: scale(0.97);
 }
 
 .danger.small {
@@ -321,6 +393,7 @@ textarea {
   width: 100%;
 }
 
+/* ===== Status ===== */
 .status {
   display: inline-flex;
   min-width: 76px;
@@ -331,53 +404,17 @@ textarea {
   font-weight: 800;
 }
 
-.status.idle {
-  background: #e8f5e9;
-  color: #2e7d32;
-}
+.status.idle { background: #e8f5e9; color: #2e7d32; }
+.status.online { background: #dff8ed; color: #126c52; }
+.status.active { background: #e6f2ff; color: #155da8; }
+.status.working { background: #fff4d8; color: #8a5a00; }
+.status.crashed { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
+.status.error { background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; }
+.status.stale { background: #eceff3; color: #576579; }
+.status.offline { background: #f5f5f5; color: #757575; }
+.status.neutral { background: #eef2f6; color: #4c5b6d; }
 
-.status.online {
-  background: #dff8ed;
-  color: #126c52;
-}
-
-.status.active {
-  background: #e6f2ff;
-  color: #155da8;
-}
-
-.status.working {
-  background: #fff4d8;
-  color: #8a5a00;
-}
-
-.status.crashed {
-  background: #ffebee;
-  color: #c62828;
-  border: 1px solid #ef9a9a;
-}
-
-.status.error {
-  background: #fff3e0;
-  color: #e65100;
-  border: 1px solid #ffcc80;
-}
-
-.status.stale {
-  background: #eceff3;
-  color: #576579;
-}
-
-.status.offline {
-  background: #f5f5f5;
-  color: #757575;
-}
-
-.status.neutral {
-  background: #eef2f6;
-  color: #4c5b6d;
-}
-
+/* ===== Context ===== */
 .contextBlock {
   min-height: 128px;
   max-height: 260px;
@@ -411,14 +448,14 @@ textarea {
   font-size: 12px;
 }
 
+/* ===== Detail Grid ===== */
 .detailGrid {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
   gap: 16px;
 }
 
-.detailMeta,
-.terminalPanel {
+.detailMeta, .terminalPanel {
   padding: 14px;
   display: grid;
   gap: 14px;
@@ -429,6 +466,7 @@ textarea {
   min-width: 0;
 }
 
+/* ===== Terminal ===== */
 .terminal {
   height: 520px;
   min-height: 360px;
@@ -447,6 +485,49 @@ textarea {
   overflow-y: auto;
 }
 
+/* Fullscreen terminal modal */
+.terminalModal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #0f172a;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+}
+
+.terminalModalHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #172033;
+  border-bottom: 1px solid #2d3a4f;
+}
+
+.terminalModalHeader h2 {
+  color: #ffffff;
+  font-size: 16px;
+}
+
+.terminalModalClose {
+  background: none;
+  border: none;
+  color: #98a5b7;
+  font-size: 24px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.terminalModalContent {
+  flex: 1;
+  padding: 8px;
+  overflow: hidden;
+}
+
+/* ===== Context List ===== */
 .contextList {
   display: grid;
   gap: 14px;
@@ -458,6 +539,7 @@ textarea {
   gap: 12px;
 }
 
+/* ===== Quick Start ===== */
 .quickStart {
   max-width: 900px;
 }
@@ -511,8 +593,7 @@ textarea {
   font-size: 13px;
 }
 
-.configTable th,
-.configTable td {
+.configTable th, .configTable td {
   border: 1px solid #e5e7eb;
   padding: 10px 12px;
   text-align: left;
@@ -528,8 +609,7 @@ textarea {
   color: #4b5563;
 }
 
-.empty,
-.error {
+.empty, .error {
   padding: 16px;
   color: #66758a;
 }
@@ -542,6 +622,54 @@ textarea {
   color: #9b2c2c;
 }
 
+/* ===== Mobile Menu Toggle ===== */
+.menuToggle {
+  display: none;
+  background: none;
+  border: none;
+  color: #ffffff;
+  font-size: 24px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+/* ===== Bottom Navigation (Mobile) ===== */
+.bottomNav {
+  display: none;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #ffffff;
+  border-top: 1px solid #e5e7eb;
+  padding: 4px 0;
+  z-index: 100;
+  justify-content: space-around;
+}
+
+.bottomNav button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: #98a5b7;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.bottomNav button.active {
+  color: #21836d;
+}
+
+.bottomNavIcon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+/* ===== Responsive: Tablet ===== */
 @media (max-width: 1100px) {
   .shell {
     grid-template-columns: 1fr;
@@ -554,18 +682,32 @@ textarea {
     flex-direction: row;
     align-items: center;
     padding: 12px;
+    gap: 12px;
+  }
+
+  .brand {
+    flex: 1;
+  }
+
+  .brand span:not(.mark) {
+    display: none;
   }
 
   nav {
     display: flex;
+    gap: 4px;
+  }
+
+  nav button {
+    padding: 8px 12px;
+    font-size: 13px;
   }
 
   .sidebarStats {
     display: none;
   }
 
-  .agentsLayout,
-  .detailGrid {
+  .agentsLayout, .detailGrid {
     grid-template-columns: 1fr;
   }
 
@@ -574,36 +716,220 @@ textarea {
   }
 }
 
-@media (max-width: 720px) {
-  .workspace {
-    padding: 14px;
-  }
-
-  .topbar,
-  .toolbar,
-  .summaryTop,
-  .panelHeader,
-  .contextHeader {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .toolbar {
-    display: grid;
+/* ===== Responsive: Mobile ===== */
+@media (max-width: 768px) {
+  .shell {
     grid-template-columns: 1fr;
+    padding-bottom: 60px; /* Space for bottom nav */
   }
 
-  table {
+  /* Sidebar becomes header with hamburger */
+  .sidebar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    padding: 10px 16px;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+
+  .brand {
+    flex: 0 0 auto;
+  }
+
+  .brand span:not(.mark) {
     display: block;
-    overflow-x: auto;
-    white-space: nowrap;
+    font-size: 11px;
+  }
+
+  .menuToggle {
+    display: block;
+  }
+
+  nav {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: #172033;
+    padding: 8px;
+    gap: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  }
+
+  nav.open {
+    display: grid;
+  }
+
+  nav button {
+    padding: 12px 16px;
+    font-size: 15px;
+  }
+
+  /* Workspace */
+  .workspace {
+    padding: 12px;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  h1 {
+    font-size: 20px;
+  }
+
+  /* Toolbar */
+  .toolbar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 12px;
+  }
+
+  /* Table replaced by cards */
+  table {
+    display: none;
+  }
+
+  .agentCards {
+    display: block;
+  }
+
+  /* Preview */
+  .preview {
+    padding: 12px;
+  }
+
+  /* Buttons */
+  .primary, .secondary, .danger {
+    padding: 12px 16px;
+    font-size: 15px;
+    min-height: 44px; /* iOS touch target */
   }
 
   .buttonRow {
     flex-direction: column;
+    gap: 8px;
   }
 
   .buttonRow button {
     width: 100%;
+  }
+
+  /* Detail Grid */
+  .detailGrid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .detailMeta, .terminalPanel {
+    padding: 12px;
+  }
+
+  /* Terminal */
+  .terminal {
+    height: 400px;
+    min-height: 300px;
+  }
+
+  /* Form elements */
+  input, select, textarea {
+    padding: 12px;
+    font-size: 16px; /* Prevent zoom */
+    min-height: 44px;
+  }
+
+  textarea {
+    min-height: 100px;
+  }
+
+  /* Context */
+  .contextBlock {
+    min-height: 100px;
+    max-height: 200px;
+    font-size: 13px;
+  }
+
+  .contextItem {
+    padding: 12px;
+  }
+
+  /* Quick Start */
+  .quickStart h2 {
+    font-size: 18px;
+  }
+
+  .quickStart h3 {
+    font-size: 15px;
+  }
+
+  .codeBlock {
+    padding: 12px;
+    font-size: 12px;
+  }
+
+  /* Bottom Nav */
+  .bottomNav {
+    display: flex;
+  }
+}
+
+/* ===== Small Mobile ===== */
+@media (max-width: 480px) {
+  .workspace {
+    padding: 8px;
+  }
+
+  .agentCard {
+    padding: 12px;
+    margin-bottom: 8px;
+  }
+
+  .agentCardMeta {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  h1 {
+    font-size: 18px;
+  }
+
+  .terminal {
+    height: 350px;
+    min-height: 250px;
+  }
+}
+
+/* ===== Touch Device Optimizations ===== */
+@media (hover: none) and (pointer: coarse) {
+  tr:hover {
+    background: transparent !important;
+  }
+
+  tbody tr:active {
+    background: #eff9f5;
+  }
+
+  .agentCard:active {
+    transform: scale(0.98);
+  }
+
+  button, input, select, textarea {
+    touch-action: manipulation;
+  }
+}
+
+/* ===== Reduce Motion ===== */
+@media (prefers-reduced-motion: reduce) {
+  .agentCard, .primary, .secondary, .danger {
+    transition: none;
+  }
+
+  .agentCard:active, .primary:active, .secondary:active, .danger:active {
+    transform: none;
   }
 }

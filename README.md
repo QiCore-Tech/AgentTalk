@@ -98,6 +98,54 @@ scripts/start-client.sh \
 - [Agent instructions](AGENTS.md)
 - [AgentTalk skill](.agents/skills/agenttalk/SKILL.md)
 
+#### 如何为 Agent 配置 Skill
+
+**Claude Code 用户：**
+```bash
+# 复制 skill 到 Claude Code 配置目录
+cp .agents/skills/agenttalk/SKILL.md ~/.claude/skills/
+```
+
+**其他 Agent：**
+将 `.agents/skills/agenttalk/SKILL.md` 放入 agent 可读取的 skills 目录。
+
+#### Skill 能力
+
+启用后，agent 可以：
+
+1. **发现 Peers** - 查看 LAN 中其他在线 agent
+2. **检查上下文** - 查看目标 agent 的终端输出（避免打扰忙碌的 agent）
+3. **发送请求** - 向其他 agent 发送协作任务
+4. **接收消息** - 处理来自其他 agent 的请求并返回结果
+
+#### Agent 间协作示例
+
+```bash
+# 发现其他 agent
+agenttalk list
+
+# 查看目标 agent 状态（检查是否忙碌）
+agenttalk context alice-codex-api --lines 120
+
+# 发送协作请求
+agenttalk send --to alice-codex-api \
+  --message "请检查 docs/api.md 的接口契约，重点关注错误处理"
+
+# 等待响应（--watch 模式）
+agenttalk send --to alice-codex-api \
+  --message "请检查 docs/api.md" --watch
+```
+
+#### 消息格式建议
+
+Agent 间通信应使用清晰的任务描述：
+
+```text
+请检查 <文件路径或主题>。
+重点关注 <具体风险点>。
+先返回发现，然后简短总结。
+```
+
 ### 安全注意事项
 
 `scripts/start-client.sh --discover` 和 `agenttalk discover` 只读 tmux pane 元数据。消息投递会写入已注册 pane。只注册明确允许 AgentTalk 输入的 pane。

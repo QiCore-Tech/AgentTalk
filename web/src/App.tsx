@@ -28,6 +28,8 @@ function App() {
   const [contexts, setContexts] = useState<Record<string, AgentContext>>({})
   const [messages, setMessages] = useState<Message[]>([])
   const [error, setError] = useState('')
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [terminalFullscreen, setTerminalFullscreen] = useState(false)
 
   const loadContext = useCallback(async (shortId: string) => {
     try {
@@ -145,21 +147,24 @@ function App() {
             <span>LAN Agent Console</span>
           </div>
         </div>
-        <nav>
-          <button className={page === 'agents' ? 'active' : ''} onClick={() => setPage('agents')}>
+        <button className="menuToggle" onClick={() => setMenuOpen(!menuOpen)} aria-label="Menu">
+          {menuOpen ? '✕' : '☰'}
+        </button>
+        <nav className={menuOpen ? 'open' : ''}>
+          <button className={page === 'agents' ? 'active' : ''} onClick={() => { setPage('agents'); setMenuOpen(false) }}>
             Agents
           </button>
-          <button className={page === 'context' ? 'active' : ''} onClick={() => setPage('context')}>
+          <button className={page === 'context' ? 'active' : ''} onClick={() => { setPage('context'); setMenuOpen(false) }}>
             Context
           </button>
           <button
             className={page === 'detail' ? 'active' : ''}
             disabled={!selectedAgent}
-            onClick={() => setPage('detail')}
+            onClick={() => { setPage('detail'); setMenuOpen(false) }}
           >
             Detail
           </button>
-          <button className={page === 'quickstart' ? 'active' : ''} onClick={() => setPage('quickstart')}>
+          <button className={page === 'quickstart' ? 'active' : ''} onClick={() => { setPage('quickstart'); setMenuOpen(false) }}>
             Quick Start
           </button>
         </nav>
@@ -235,6 +240,45 @@ function App() {
         )}
 
         {page === 'quickstart' && <QuickStart />}
+
+        {/* Mobile Bottom Navigation */}
+        <nav className="bottomNav">
+          <button className={page === 'agents' ? 'active' : ''} onClick={() => setPage('agents')}>
+            <span className="bottomNavIcon">📊</span>
+            Agents
+          </button>
+          <button className={page === 'context' ? 'active' : ''} onClick={() => setPage('context')}>
+            <span className="bottomNavIcon">📝</span>
+            Context
+          </button>
+          <button
+            className={page === 'detail' ? 'active' : ''}
+            disabled={!selectedAgent}
+            onClick={() => setPage('detail')}
+          >
+            <span className="bottomNavIcon">🔍</span>
+            Detail
+          </button>
+          <button className={page === 'quickstart' ? 'active' : ''} onClick={() => setPage('quickstart')}>
+            <span className="bottomNavIcon">📖</span>
+            Guide
+          </button>
+        </nav>
+
+        {/* Fullscreen Terminal Modal */}
+        {terminalFullscreen && selectedAgent && (
+          <div className="terminalModal">
+            <div className="terminalModalHeader">
+              <h2>Terminal: {selectedAgent.short_id}</h2>
+              <button className="terminalModalClose" onClick={() => setTerminalFullscreen(false)}>
+                ✕
+              </button>
+            </div>
+            <div className="terminalModalContent">
+              <LiveTerminal agent={selectedAgent} />
+            </div>
+          </div>
+        )}
       </section>
     </main>
   )
@@ -323,7 +367,51 @@ function AgentsHome(props: AgentsHomeProps) {
             ))}
           </tbody>
         </table>
-        {!props.allAgents.length ? <div className="empty">No agents registered.</div> : null}
+
+        {/* Mobile Card View */}
+        <div className="agentCards">
+          {props.agents.map((agent) => (
+            <div
+              key={agent.short_id}
+              className={`agentCard ${agent.short_id === props.selectedId ? 'selected' : ''}`}
+              onClick={() => props.onSelect(agent.short_id)}
+            >
+              <div className="agentCardHeader">
+                <span className="agentCardTitle">{agent.short_id}</span>
+                <StatusBadge status={agent.status} />
+              </div>
+              <div className="agentCardMeta">
+                <div className="agentCardMetaItem">
+                  <span className="agentCardMetaLabel">Kind</span>
+                  <span>{agent.kind}</span>
+                </div>
+                <div className="agentCardMetaItem">
+                  <span className="agentCardMetaLabel">Owner</span>
+                  <span>{agent.owner}</span>
+                </div>
+                <div className="agentCardMetaItem">
+                  <span className="agentCardMetaLabel">Workspace</span>
+                  <span className="mono">{agent.workspace}</span>
+                </div>
+                <div className="agentCardMetaItem">
+                  <span className="agentCardMetaLabel">Mode</span>
+                  <span>{agent.receive_mode}</span>
+                </div>
+              </div>
+              <div className="agentCardActions">
+                <button className="secondary" onClick={(e) => { e.stopPropagation(); props.onOpenDetail(); }}>
+                  Terminal
+                </button>
+                <button className="danger" onClick={(e) => { e.stopPropagation(); props.onDelete(agent.short_id); }}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+          {!props.allAgents.length ? <div className="empty">No agents registered.</div> : null}
+        </div>
+
+        {!props.allAgents.length ? <div className="empty desktop-only">No agents registered.</div> : null}
       </section>
 
       <aside className="panel preview">
@@ -511,7 +599,40 @@ agenttalk register \\
 agenttalk daemon start`}
         </pre>
 
-        <h3>6. 常用命令</h3>
+        <h3>6. Agent 间协作（Skill）</h3>
+        <p>AgentTalk 支持 AI agent 之间直接通信。将 Skill 文件放在您的 agent 配置目录中即可启用。</p>
+
+        <pre className="codeBlock">
+{`# 1. 将 skill 文件复制到 agent 配置目录
+# 对于 Claude Code:
+cp .agents/skills/agenttalk/SKILL.md ~/.claude/skills/
+
+# 对于其他 agent，放在其可读取的 skills 目录`}
+        </pre>
+
+        <p>启用后，agent 可以：</p>
+        <ul>
+          <li>发现其他在线 agent</li>
+          <li>查看其他 agent 的终端上下文</li>
+          <li>向其他 agent 发送协作请求</li>
+          <li>在飞书中通过机器人交互</li>
+        </ul>
+
+        <pre className="codeBlock">
+{`# Agent 发现 peers
+agenttalk list
+
+# 查看目标 agent 的上下文（避免打扰正在忙碌的 agent）
+agenttalk context alice-codex-api --lines 120
+
+# 发送协作请求
+agenttalk send --to alice-codex-api --message "请检查 docs/api.md 的接口契约"
+
+# 等待响应（--watch 模式）
+agenttalk send --to alice-codex-api --message "请检查 docs/api.md" --watch`}
+        </pre>
+
+        <h3>7. 常用命令</h3>
         <pre className="codeBlock">
 {`# 列出所有 agent
 agenttalk list
