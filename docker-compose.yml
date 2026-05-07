@@ -17,7 +17,7 @@ services:
       FEISHU_ENABLE: "${FEISHU_ENABLE:-0}"
       FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
       FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
-      FEISHU_ALERT_CHAT_ID: "${FEISHU_ALERT_CHAT_ID:-}"
+      FEISHU_ALERT_CHAT_ID: "oc_1b9eea7ac3575e03074908536e3dadba"
       # PTY terminal: tmux socket mounted for process keepalive
       # PTY sessions are created independently in container
     volumes:

@@ -297,6 +297,50 @@ function App() {
   )
 }
 
+function AutoResumeToggle({ agent }: { agent: Agent }) {
+  const [config, setConfig] = useState({
+    enabled: agent.auto_resume_enabled ?? true,
+    message: agent.auto_resume_message ?? '继续',
+  })
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setConfig({
+      enabled: agent.auto_resume_enabled ?? true,
+      message: agent.auto_resume_message ?? '继续',
+    })
+  }, [agent])
+
+  async function handleToggle(enabled: boolean) {
+    const newConfig = { ...config, enabled }
+    setConfig(newConfig)
+    setSaving(true)
+    try {
+      await setAgentAutoResume(agent.short_id, newConfig)
+    } catch (err) {
+      console.error('Failed to save auto-resume:', err)
+      setConfig(config)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <label
+      className="toggle"
+      title={`Auto-resume: ${config.enabled ? 'on' : 'off'} (${config.message})`}
+      style={{ opacity: saving ? 0.5 : 1 }}
+    >
+      <input
+        type="checkbox"
+        checked={config.enabled}
+        onChange={(e) => handleToggle(e.target.checked)}
+      />
+      <span className="toggleLabel">{config.enabled ? 'On' : 'Off'}</span>
+    </label>
+  )
+}
+
 interface AgentsHomeProps {
   agents: Agent[]
   allAgents: Agent[]
@@ -347,6 +391,7 @@ function AgentsHome(props: AgentsHomeProps) {
               <th>Workspace</th>
               <th>Status</th>
               <th>Mode</th>
+              <th>Auto Resume</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -365,6 +410,9 @@ function AgentsHome(props: AgentsHomeProps) {
                   <StatusBadge status={agent.status} />
                 </td>
                 <td>{agent.receive_mode}</td>
+                <td onClick={(e) => e.stopPropagation()}>
+                  <AutoResumeToggle agent={agent} />
+                </td>
                 <td>
                   <button
                     className="danger small"
@@ -409,6 +457,10 @@ function AgentsHome(props: AgentsHomeProps) {
                 <div className="agentCardMetaItem">
                   <span className="agentCardMetaLabel">Mode</span>
                   <span>{agent.receive_mode}</span>
+                </div>
+                <div className="agentCardMetaItem" onClick={(e) => e.stopPropagation()}>
+                  <span className="agentCardMetaLabel">Auto Resume</span>
+                  <AutoResumeToggle agent={agent} />
                 </div>
               </div>
               <div className="agentCardActions">
@@ -467,6 +519,7 @@ function AgentDetail({
     <div className="detailGrid">
       <section className="panel detailMeta">
         <AgentSummary agent={agent} />
+        <AutoResumeEditor agent={agent} />
         <MessageBox agent={agent} onSend={onSend} />
         <button className="danger full" onClick={() => onDelete(agent.short_id)}>
           Delete Agent
@@ -734,13 +787,35 @@ agenttalk mode my-agent-001 paste_only`}
   )
 }
 
-function AgentAutoResumeConfig({ agent }: { agent: Agent }) {
+function AutoResumeEditor({ agent }: { agent: Agent }) {
   const [config, setConfig] = useState({
     enabled: agent.auto_resume_enabled ?? true,
     message: agent.auto_resume_message ?? '继续',
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    setConfig({
+      enabled: agent.auto_resume_enabled ?? true,
+      message: agent.auto_resume_message ?? '继续',
+    })
+  }, [agent])
+
+  async function handleToggle(enabled: boolean) {
+    const newConfig = { ...config, enabled }
+    setConfig(newConfig)
+    setSaving(true)
+    try {
+      await setAgentAutoResume(agent.short_id, newConfig)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err) {
+      console.error('Failed to save auto-resume:', err)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   async function handleSave() {
     setSaving(true)
@@ -749,38 +824,48 @@ function AgentAutoResumeConfig({ agent }: { agent: Agent }) {
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } catch (err) {
-      console.error('Failed to save auto-resume config:', err)
+      console.error('Failed to save auto-resume:', err)
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <div style={{ padding: '0.75rem', border: '1px solid #e2e8f0', borderRadius: '0.5rem', marginBottom: '0.75rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-        <strong>{agent.short_id}</strong>
-        <span style={{ fontSize: '0.75rem', color: '#64748b' }}>{agent.kind}</span>
+    <div className="autoResumeCard">
+      <div className="autoResumeHeader">
+        <h3>Auto Resume</h3>
+        <span className={`badge ${config.enabled ? 'success' : 'neutral'}`}>
+          {config.enabled ? 'Enabled' : 'Disabled'}
+        </span>
       </div>
-      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+      <p className="helpText">
+        Automatically send resume message when agent is paused due to LLM/network issues.
+      </p>
+      <label className="toggleRow">
         <input
           type="checkbox"
           checked={config.enabled}
-          onChange={(e) => setConfig({ ...config, enabled: e.target.checked })}
+          onChange={(e) => handleToggle(e.target.checked)}
         />
-        Enable auto resume
+        <span>Enable auto-resume</span>
       </label>
-      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+      <div className="inputRow">
+        <label>Resume message:</label>
         <input
           type="text"
           value={config.message}
           onChange={(e) => setConfig({ ...config, message: e.target.value })}
           placeholder="继续"
-          style={{ flex: 1, maxWidth: '200px' }}
+          disabled={!config.enabled}
         />
-        <button className="primary" onClick={handleSave} disabled={saving} style={{ padding: '0.25rem 0.75rem', fontSize: '0.875rem' }}>
-          {saving ? 'Saving...' : saved ? 'Saved!' : 'Save'}
-        </button>
       </div>
+      <button 
+        className="primary small" 
+        onClick={handleSave} 
+        disabled={saving}
+      >
+        {saving ? 'Saving...' : saved ? 'Saved!' : 'Save'}
+      </button>
     </div>
   )
 }
@@ -792,16 +877,12 @@ function SettingsPage() {
     model: 'gpt-4o-mini',
     enabled: false,
   })
-  const [agents, setAgents] = useState<Agent[]>([])
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    Promise.all([getLLMConfig(), listAgents()])
-      .then(([llm, agentList]) => {
-        setLlmConfig(llm)
-        setAgents(agentList)
-      })
+    getLLMConfig()
+      .then((llm) => setLlmConfig(llm))
       .catch(() => setMessage('Failed to load config'))
   }, [])
 
@@ -822,18 +903,6 @@ function SettingsPage() {
     <div className="quickstart">
       <section>
         <h2>Settings</h2>
-
-        <h3 style={{ marginTop: '2rem' }}>Per-Agent Auto Resume</h3>
-        <p>Configure auto-resume for each agent individually. Requires LLM analysis to be enabled.</p>
-        <div style={{ marginTop: '1rem' }}>
-          {agents.length === 0 ? (
-            <p style={{ color: '#64748b' }}>No agents registered.</p>
-          ) : (
-            agents.map((agent) => (
-              <AgentAutoResumeConfig key={agent.short_id} agent={agent} />
-            ))
-          )}
-        </div>
 
         <h3 style={{ marginTop: '2rem' }}>LLM Configuration</h3>
         <p>Configure the LLM for agent status analysis.</p>

@@ -58,6 +58,8 @@ class FeishuAgentTalkService:
                 if error == "target_offline":
                     return text_reply(f"Target agent is offline: {target}")
                 assert message is not None
+                context = self.store.get_agent_context(target)
+                context_preview = truncate(context.context or "No terminal context captured.", 2000) if context else "No terminal context captured."
                 return text_reply(
                     "\n".join(
                         [
@@ -65,6 +67,11 @@ class FeishuAgentTalkService:
                             f"message: {message.message_id}",
                             f"target: {message.target}",
                             f"status: {message.status}",
+                            "",
+                            "Terminal context preview:",
+                            "```",
+                            context_preview,
+                            "```",
                         ]
                     )
                 )

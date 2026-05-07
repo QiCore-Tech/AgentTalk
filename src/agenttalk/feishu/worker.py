@@ -91,8 +91,10 @@ class FeishuLongConnectionWorker:
         import nest_asyncio
         import lark_oapi as lark
 
-        # Apply nest_asyncio to allow nested event loops
-        nest_asyncio.apply()
+        # Create a new event loop for this thread to avoid conflicts with uvicorn
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        nest_asyncio.apply(loop)
 
         def on_message(data: Any) -> None:
             try:

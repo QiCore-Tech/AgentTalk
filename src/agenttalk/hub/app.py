@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import nest_asyncio
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -33,6 +34,9 @@ from agenttalk.hub.pty_manager import pty_manager
 from agenttalk.tmux import TmuxClient
 from agenttalk.feishu.service import FeishuAgentTalkService
 from agenttalk.feishu.worker import FeishuEventHandler, FeishuLongConnectionWorker, LarkMessenger
+
+# Apply nest_asyncio to resolve event loop conflicts with lark-oapi
+nest_asyncio.apply()
 
 
 def create_app(settings: HubSettings) -> FastAPI:
