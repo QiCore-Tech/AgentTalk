@@ -157,9 +157,16 @@ class AgentTalkRelay:
         )
 
     def run_forever(self, *, interval_seconds: float = 5.0) -> None:
+        context_counter = 0
         while True:
             self.sync_once()
             self.process_next_message_once()
+            self.update_watches_once()
+            # Sync context every 6 intervals (~30s)
+            context_counter += 1
+            if context_counter >= 6:
+                self.sync_context_once()
+                context_counter = 0
             self.hub_client.heartbeat(self.config.machine_id)
             time.sleep(interval_seconds)
 

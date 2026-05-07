@@ -18,8 +18,11 @@ services:
       FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
       FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
       FEISHU_ALERT_CHAT_ID: "${FEISHU_ALERT_CHAT_ID:-}"
+      # TMUX_TMPDIR not set; container uid=0 uses /tmp/tmux-0/default
+      # which is symlinked to host socket in entrypoint.sh
     volumes:
       - agenttalk-data:/data
+      - /tmp/tmux-1000:/tmp/tmux-1000:rw
 
 volumes:
   agenttalk-data:

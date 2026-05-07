@@ -19,6 +19,9 @@ ENV AGENTTALK_WEB_DIST=/app/web/dist
 
 WORKDIR /app
 
+# Install tmux for WebSocket terminal access
+RUN apt-get update && apt-get install -y --no-install-recommends tmux && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock README.md ./

@@ -12,6 +12,13 @@ else
   FEISHU_FLAG="--no-feishu-enable"
 fi
 
+# Link host tmux socket for WebSocket terminal access
+if [ -S /tmp/tmux-1000/default ] && [ ! -e /tmp/tmux-0/default ]; then
+  mkdir -p /tmp/tmux-0
+  chmod 700 /tmp/tmux-0
+  ln -sf /tmp/tmux-1000/default /tmp/tmux-0/default
+fi
+
 exec uv run --no-sync agenttalk hub serve \
   --host "${AGENTTALK_HOST:-0.0.0.0}" \
   --port "${AGENTTALK_PORT:-8787}" \
