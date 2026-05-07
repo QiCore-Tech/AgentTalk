@@ -166,7 +166,27 @@ def create_app(settings: HubSettings) -> FastAPI:
             await websocket.close(code=4004, reason=f"Agent not found: {short_id}")
             return
 
-        session = pty_manager.get_or_create(short_id, agent.tmux_target)
+        # Send saved context first so user sees previous output immediately
+        try:
+            context = store.get_agent_context(short_id)
+            if context and context.context:
+                # Strip ANSI codes for clean display
+                import re
+                clean = re.sub(r'\x1b\[[0-9;]*[mKHJ]', '', context.context)
+                await websocket.send_text(f"\x1b[32m[Previous terminal output - {context.updated_at or 'unknown'}]\x1b[0m\r\n")
+                await websocket.send_text(clean.replace("\n", "\r\n") + "\r\n")
+                await websocket.send_text("\x1b[33m" + "=" * 40 + "\x1b[0m\r\n")
+        except Exception:
+            pass
+
+        await websocket.send_text("\x1b[32m[Connected to PTY]\x1b[0m\r\n")
+
+        # Create or get PTY session
+        try:
+            session = pty_manager.get_or_create(short_id, agent.tmux_target)
+        except Exception as exc:
+            await websocket.send_text(f"\x1b[31m[Failed to create PTY: {exc}]\x1b[0m\r\n")
+            return
 
         # Handle resize messages and data
         read_task = None
@@ -202,7 +222,6 @@ def create_app(settings: HubSettings) -> FastAPI:
                 await websocket.close()
             except Exception:
                 pass
-            # Don't remove PTY session on disconnect - keep it alive for reconnection
 
     @app.post(
         "/api/relays/register",

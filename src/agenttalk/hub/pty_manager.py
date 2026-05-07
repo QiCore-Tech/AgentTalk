@@ -146,7 +146,12 @@ class PTYSession:
         # Remove ANSI escape sequences for storage
         import re
         clean = re.sub(r'\x1b\[[0-9;]*[mKHJ]', '', "\n".join(lines[-max_lines:]))
-        return clean
+        # Remove tmux status line
+        clean = re.sub(r'\[pty-[^:]+:[^\]]+\s+""\s+\d+:\d+\s+[^\]]+\]', '', clean)
+        # Remove other tmux artifacts
+        clean = re.sub(r'\x1b\?\d+[lh]', '', clean)
+        clean = re.sub(r'\(B', '', clean)
+        return clean.strip()
 
     def close(self) -> None:
         """Close the PTY session."""
