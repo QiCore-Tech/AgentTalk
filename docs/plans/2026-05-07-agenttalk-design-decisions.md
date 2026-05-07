@@ -89,7 +89,25 @@ The system should help agents discover peers, send messages to a named target ag
     - Web UI: React + Vite
     - Web terminal: xterm.js
 
-29. The first version should avoid heavyweight features:
+29. Feishu integration should use Feishu long-connection mode instead of a public callback URL.
+
+30. Feishu integration should be started by `agenttalk hub serve`, not a separate user-facing service command.
+
+31. Feishu bot UX should support both text commands and interactive cards.
+
+32. First Feishu access policy is permissive for the installed bot context: users/chats that can talk to the bot can query and operate AgentTalk. The system should record the Feishu operator ID, but not enforce a complex permission model in the first version.
+
+33. Feishu should reuse AgentTalk Hub capabilities rather than directly controlling tmux:
+    - list agents
+    - view agent detail
+    - read recent context
+    - send point-to-point messages
+    - query message status
+    - read message response
+
+34. Feishu should not expose full terminal control in the first version.
+
+35. The first version should avoid heavyweight features:
     - no full terminal recording
     - no complex permission system
     - no cross-internet access
