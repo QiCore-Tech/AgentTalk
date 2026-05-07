@@ -216,9 +216,11 @@ npm run test:e2e
 
 ### Agent Skill
 
-内置 skill:
+仓库内置 agent 入口和 skill:
 
+- [Agent instructions](AGENTS.md)
 - [AgentTalk skill](.agents/skills/agenttalk/SKILL.md)
+- [Agent skill usage guide](docs/guides/agent-skill-usage.md)
 
 在 AI agent 环境里使用这个 skill，可以让 agent 知道如何：
 
@@ -230,12 +232,27 @@ npm run test:e2e
 
 ### 飞书与 Docker
 
-飞书接入和 Docker 一键部署的实施前文档：
+飞书长连接机器人和 Docker 一键部署已接入 Hub：
 
 - [Feishu bot setup guide](docs/guides/feishu-bot-setup.md)
 - [Docker deployment guide](docs/guides/docker-deployment.md)
 - [Feishu integration design](docs/plans/2026-05-07-agenttalk-feishu-design.md)
 - [Feishu implementation plan](docs/plans/2026-05-07-agenttalk-feishu-implementation-plan.md)
+
+Docker 快速启动：
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+启用飞书机器人：
+
+```dotenv
+FEISHU_ENABLE=1
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+```
 
 ### 安全注意事项
 
@@ -286,7 +303,7 @@ npm run test:e2e
 最近验证结果：
 
 ```text
-uv run pytest        28 passed
+uv run pytest        47 passed
 npm run lint         passed
 npm run build        passed
 npm run test:e2e     4 passed
@@ -511,9 +528,11 @@ npm run test:e2e
 
 ### Agent Skill
 
-Bundled skill:
+Repository-bundled agent entry points and skill:
 
+- [Agent instructions](AGENTS.md)
 - [AgentTalk skill](.agents/skills/agenttalk/SKILL.md)
+- [Agent skill usage guide](docs/guides/agent-skill-usage.md)
 
 Use this skill in AI agent environments so agents know how to:
 
@@ -525,12 +544,27 @@ Use this skill in AI agent environments so agents know how to:
 
 ### Feishu And Docker
 
-Pre-implementation guides for Feishu integration and one-command Docker deployment:
+The Feishu long-connection bot and one-command Docker deployment are wired into the Hub:
 
 - [Feishu bot setup guide](docs/guides/feishu-bot-setup.md)
 - [Docker deployment guide](docs/guides/docker-deployment.md)
 - [Feishu integration design](docs/plans/2026-05-07-agenttalk-feishu-design.md)
 - [Feishu implementation plan](docs/plans/2026-05-07-agenttalk-feishu-implementation-plan.md)
+
+Docker quick start:
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+Enable the Feishu bot:
+
+```dotenv
+FEISHU_ENABLE=1
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+```
 
 ### Safety Notes
 
@@ -581,7 +615,7 @@ npm run test:e2e
 Latest verified results:
 
 ```text
-uv run pytest        28 passed
+uv run pytest        47 passed
 npm run lint         passed
 npm run build        passed
 npm run test:e2e     4 passed

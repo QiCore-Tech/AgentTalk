@@ -10,6 +10,10 @@ class HubSettings:
     token: str
     heartbeat_ttl_seconds: int = 30
     web_dist_path: Path | None = None
+    public_base_url: str = ""
+    feishu_enable: bool = False
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
 
 
 def default_database_path() -> Path:

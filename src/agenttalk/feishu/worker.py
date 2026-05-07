@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import json
+import logging
+import threading
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+from agenttalk.feishu.commands import parse_command
+from agenttalk.feishu.render import FeishuReply
+from agenttalk.feishu.service import FeishuAgentTalkService, FeishuOperator
+
+logger = logging.getLogger(__name__)
+
+
+class FeishuMessenger(Protocol):
+    def send_reply(self, receive_id: str, reply: FeishuReply, *, receive_id_type: str = "chat_id") -> None: ...
+
+
+@dataclass(frozen=True)
+class FeishuEvent:
+    text: str
+    receive_id: str
+    receive_id_type: str = "chat_id"
+    open_id: str = ""
+    chat_id: str = ""
+
+
+class FeishuEventHandler:
+    def __init__(self, service: FeishuAgentTalkService, messenger: FeishuMessenger) -> None:
+        self.service = service
+        self.messenger = messenger
+
+    def handle_event(self, event: FeishuEvent) -> FeishuReply:
+        reply = self.service.handle(parse_command(event.text), FeishuOperator(open_id=event.open_id, chat_id=event.chat_id))
+        self.messenger.send_reply(event.receive_id, reply, receive_id_type=event.receive_id_type)
+        return reply
+
+
+class LarkMessenger:
+    def __init__(self, app_id: str, app_secret: str) -> None:
+        import lark_oapi as lark
+
+        self._client = lark.Client.builder().app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.INFO).build()
+
+    def send_reply(self, receive_id: str, reply: FeishuReply, *, receive_id_type: str = "chat_id") -> None:
+        import lark_oapi.api.im.v1 as im_v1
+
+        content = (
+            json.dumps(reply.content, ensure_ascii=False)
+            if isinstance(reply.content, dict)
+            else json.dumps({"text": reply.content}, ensure_ascii=False)
+        )
+        request = (
+            im_v1.CreateMessageRequest.builder()
+            .receive_id_type(receive_id_type)
+            .request_body(
+                im_v1.CreateMessageRequestBody.builder()
+                .receive_id(receive_id)
+                .msg_type(reply.msg_type)
+                .content(content)
+                .build()
+            )
+            .build()
+        )
+        response = self._client.im.v1.message.create(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu send failed: code={response.code}, msg={response.msg}")
+
+
+class FeishuLongConnectionWorker:
+    def __init__(self, *, app_id: str, app_secret: str, handler: FeishuEventHandler) -> None:
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self.handler = handler
+        self._thread: threading.Thread | None = None
+
+    def start_background(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self.run_forever, name="agenttalk-feishu", daemon=True)
+        self._thread.start()
+
+    def run_forever(self) -> None:
+        import lark_oapi as lark
+
+        def on_message(data: Any) -> None:
+            try:
+                event = extract_event(data)
+                self.handler.handle_event(event)
+            except Exception:
+                logger.exception("failed to handle Feishu event")
+
+        event_handler = (
+            lark.EventDispatcherHandler.builder("", "")
+            .register_p2_im_message_receive_v1(on_message)
+            .build()
+        )
+        client = lark.ws.Client(self.app_id, self.app_secret, event_handler=event_handler, log_level=lark.LogLevel.INFO)
+        client.start()
+
+
+def extract_event(data: Any) -> FeishuEvent:
+    event = getattr(data, "event", data)
+    message = getattr(event, "message", None)
+    sender = getattr(event, "sender", None)
+    text = extract_text_from_message(message)
+    chat_id = str(getattr(message, "chat_id", "") or getattr(message, "chatId", "") or "")
+    open_id = ""
+    if sender is not None:
+        sender_id = getattr(sender, "sender_id", None)
+        open_id = str(getattr(sender_id, "open_id", "") or getattr(sender_id, "openId", "") or "")
+    receive_id = chat_id or open_id
+    receive_id_type = "chat_id" if chat_id else "open_id"
+    return FeishuEvent(
+        text=text,
+        receive_id=receive_id,
+        receive_id_type=receive_id_type,
+        open_id=open_id,
+        chat_id=chat_id,
+    )
+
+
+def extract_text_from_message(message: Any) -> str:
+    if message is None:
+        return ""
+    content = getattr(message, "content", "")
+    if not content:
+        return ""
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+            return str(parsed.get("text", content)).strip()
+        except json.JSONDecodeError:
+            return content.strip()
+    if isinstance(content, dict):
+        return str(content.get("text", "")).strip()
+    return str(content).strip()

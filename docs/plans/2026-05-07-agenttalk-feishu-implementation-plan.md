@@ -10,6 +10,17 @@ Date: 2026-05-07
 
 ## Milestones
 
+## Execution Status
+
+| Milestone | Status | Notes |
+|---|---|---|
+| F0: Operator Documentation | Done | Feishu and Docker guides are linked from README. |
+| F1: Feishu Settings and Startup Wiring | Done | `agenttalk hub serve` starts the Feishu worker only when enabled. |
+| F2: Command Parser and AgentTalk Service Facade | Done | Parser and store-backed command service are covered by unit tests. |
+| F3: Feishu Message Rendering | Done | Text and interactive-card payloads are covered by unit tests. |
+| F4: Long-Connection Worker | Done | SDK wrapper is lazy-loaded and event handling is tested with fake events. |
+| F5: Integration Docs and Manual Validation | Done | Docker smoke test passed; real Feishu chat validation is pending credentials. |
+
 ### F0: Operator Documentation
 
 Goal: Prepare setup and deployment guides before implementation starts.

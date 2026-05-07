@@ -2,9 +2,7 @@
 
 Date: 2026-05-07
 
-This guide describes the target Docker deployment for AgentTalk Hub, Web UI, and Feishu long-connection bot.
-
-Implementation is not yet complete. This document defines the desired packaging and operator experience before coding starts.
+This guide describes the Docker deployment for AgentTalk Hub, Web UI, and the optional Feishu long-connection bot.
 
 ## Goal
 
@@ -29,7 +27,7 @@ Developer machine
 
 ## Binding IP Or Domain
 
-The Hub should support:
+The Hub supports:
 
 ```bash
 --host 0.0.0.0
@@ -37,10 +35,11 @@ The Hub should support:
 --public-base-url https://agenttalk.company.lan
 ```
 
-Expected environment variables:
+Container environment variables:
 
 ```dotenv
 AGENTTALK_HOST=0.0.0.0
+AGENTTALK_BIND=0.0.0.0
 AGENTTALK_PORT=8787
 AGENTTALK_PUBLIC_BASE_URL=https://agenttalk.company.lan
 ```
@@ -68,31 +67,19 @@ SQLite database path:
 /data/agenttalk.sqlite3
 ```
 
-## Target Dockerfile Shape
+## Docker Files
 
-```dockerfile
-FROM node:22-bookworm AS web-build
-WORKDIR /app/web
-COPY web/package*.json ./
-RUN npm ci
-COPY web/ ./
-RUN npm run build
+The repository includes:
 
-FROM python:3.12-slim AS runtime
-WORKDIR /app
-RUN pip install uv
-COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
-RUN uv sync --frozen --no-dev
-COPY --from=web-build /app/web/dist ./web/dist
-VOLUME ["/data"]
-EXPOSE 8787
-CMD ["uv", "run", "agenttalk", "hub", "serve", "--host", "0.0.0.0", "--port", "8787", "--database", "/data/agenttalk.sqlite3", "--web-dist", "web/dist"]
-```
+- `Dockerfile`
+- `.dockerignore`
+- `docker-compose.yml`
+- `.env.example`
+- `docker/entrypoint.sh`
 
-Implementation may adjust this for image size and dependency handling.
+The image builds `web/dist`, installs the Python package with the optional Feishu dependency, stores SQLite under `/data`, and starts `agenttalk hub serve`.
 
-## Target docker-compose.yml Shape
+## docker-compose.yml
 
 ```yaml
 services:
@@ -101,7 +88,7 @@ services:
     container_name: agenttalk-hub
     restart: unless-stopped
     ports:
-      - "${AGENTTALK_PORT:-8787}:8787"
+      - "${AGENTTALK_BIND:-0.0.0.0}:${AGENTTALK_PORT:-8787}:8787"
     environment:
       AGENTTALK_TOKEN: "${AGENTTALK_TOKEN}"
       AGENTTALK_PUBLIC_BASE_URL: "${AGENTTALK_PUBLIC_BASE_URL}"
@@ -115,10 +102,11 @@ volumes:
   agenttalk-data:
 ```
 
-## Target .env
+## .env
 
 ```dotenv
 AGENTTALK_TOKEN=change-me
+AGENTTALK_BIND=0.0.0.0
 AGENTTALK_PORT=8787
 AGENTTALK_PUBLIC_BASE_URL=http://192.168.1.20:8787
 
@@ -130,6 +118,7 @@ FEISHU_APP_SECRET=
 For domain deployment:
 
 ```dotenv
+AGENTTALK_BIND=127.0.0.1
 AGENTTALK_PUBLIC_BASE_URL=https://agenttalk.company.lan
 FEISHU_ENABLE=1
 FEISHU_APP_ID=cli_xxx
@@ -138,13 +127,14 @@ FEISHU_APP_SECRET=xxx
 
 ## One-Command Startup
 
-Target command:
+Copy the environment template and start the Hub:
 
 ```bash
+cp .env.example .env
 docker compose up -d --build
 ```
 
-Expected validation:
+Validate:
 
 ```bash
 curl http://127.0.0.1:8787/health
@@ -220,6 +210,8 @@ AGENTTALK_PUBLIC_BASE_URL=https://agenttalk.company.lan
 
 This public base URL should be used when Feishu cards include an "Open Web" button.
 
+If `FEISHU_ENABLE=1` but credentials are missing, the container exits with a clear startup error.
+
 ## Data Persistence
 
 Persist:
@@ -238,18 +230,11 @@ Do not store Feishu secrets inside SQLite for the first Docker version. Use envi
 - Treat Web terminal as remote control of registered tmux panes.
 - Only register panes that are intended to receive AgentTalk input.
 
-## Implementation Checklist
+## Validation Checklist
 
-- Add Dockerfile.
-- Add `.dockerignore`.
-- Add `docker-compose.yml`.
-- Add `.env.example`.
-- Add Hub settings for `AGENTTALK_PUBLIC_BASE_URL`.
-- Add Feishu flags/env handling.
-- Serve built Web UI from container.
-- Verify WebSocket proxy behavior.
-- Add Docker smoke test:
-  - build image
-  - start container
-  - call `/health`
-  - call `/api/agents` with token
+- Build image.
+- Start container.
+- Call `/health`.
+- Call `/api/agents` with bearer token.
+- Open Web UI in a browser.
+- If Feishu credentials are available, send `/help` to the bot.

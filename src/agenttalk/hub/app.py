@@ -27,6 +27,8 @@ from agenttalk.hub.models import (
 from agenttalk.hub.settings import HubSettings
 from agenttalk.hub.store import AgentFilters, HubStore
 from agenttalk.tmux import TmuxClient
+from agenttalk.feishu.service import FeishuAgentTalkService
+from agenttalk.feishu.worker import FeishuEventHandler, FeishuLongConnectionWorker, LarkMessenger
 
 
 def create_app(settings: HubSettings) -> FastAPI:
@@ -39,6 +41,17 @@ def create_app(settings: HubSettings) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.settings = settings
         app.state.store = store
+        if settings.feishu_enable:
+            messenger = LarkMessenger(settings.feishu_app_id, settings.feishu_app_secret)
+            service = FeishuAgentTalkService(store, web_base_url=settings.public_base_url)
+            handler = FeishuEventHandler(service, messenger)
+            worker = FeishuLongConnectionWorker(
+                app_id=settings.feishu_app_id,
+                app_secret=settings.feishu_app_secret,
+                handler=handler,
+            )
+            worker.start_background()
+            app.state.feishu_worker = worker
         yield
 
     app = FastAPI(title="AgentTalk Hub", version="0.1.0", lifespan=lifespan)

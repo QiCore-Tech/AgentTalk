@@ -103,7 +103,7 @@ In the app management page:
 
 The exact event names should be verified in the current Feishu console, but the required capability is receiving user messages sent to the bot.
 
-Implementation target:
+Runtime flow:
 
 ```text
 Feishu message event
@@ -167,9 +167,41 @@ agenttalk hub serve \
   --feishu-app-secret xxx
 ```
 
-## Step 7: Validate Bot Commands
+## Step 7: Start AgentTalk Hub
 
-After implementation and deployment, validate in Feishu:
+Docker:
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+Local process:
+
+```bash
+AGENTTALK_TOKEN=change-me FEISHU_ENABLE=1 FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx \
+  uv run agenttalk hub serve \
+    --host 0.0.0.0 \
+    --port 8787 \
+    --token change-me \
+    --web-dist web/dist
+```
+
+Validate Hub health:
+
+```bash
+curl http://127.0.0.1:8787/health
+```
+
+Expected:
+
+```json
+{"status":"ok"}
+```
+
+## Step 8: Validate Bot Commands
+
+Validate in Feishu:
 
 ```text
 /help
@@ -260,9 +292,9 @@ Check:
 - Target pane is still valid.
 - Agent receive mode is `auto_submit` unless paste-only is intentional.
 
-## Information To Collect During Setup
+## Setup Record
 
-Fill this before implementation/testing:
+Fill this during setup and testing:
 
 ```text
 Feishu app name:

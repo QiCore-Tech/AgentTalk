@@ -1,11 +1,13 @@
 ---
 name: agenttalk
-description: Use when an AI agent needs to communicate with another registered LAN agent through AgentTalk, inspect another agent's recent tmux context, monitor peer agent status, or route a task/review request to a specific agent short ID.
+description: Use when an AI agent needs to communicate with another registered LAN agent through AgentTalk, inspect another agent's recent tmux context, monitor peer agent status, route a task/review request to a specific agent short ID, or explain/use the optional Feishu AgentTalk bot commands.
 ---
 
 # AgentTalk
 
 AgentTalk lets tmux-hosted agent CLIs communicate through a LAN Hub. Use it when collaboration with another registered agent would help: review requests, interface checks, status handoffs, cross-agent debugging, or asking a peer agent to inspect a specific artifact.
+
+AgentTalk may also be exposed through a Feishu bot. The Feishu bot is for humans or agents operating through chat; the CLI remains the preferred path when this terminal can run commands.
 
 ## Core Rules
 
@@ -32,6 +34,13 @@ agenttalk list --owner alice
 
 Pick a target by `short id`, such as `alice-codex-api`.
 
+Feishu equivalent:
+
+```text
+/agents
+/agents online
+```
+
 ## Inspect Context
 
 Before interrupting another agent, inspect recent output:
@@ -41,6 +50,12 @@ agenttalk context alice-codex-api --lines 120
 ```
 
 Use this to decide whether the target is online, busy, or already working on related context.
+
+Feishu equivalent:
+
+```text
+/context alice-codex-api
+```
 
 ## Send a Request
 
@@ -57,6 +72,38 @@ agenttalk send --to alice-codex-api --message "Please review the API contract in
 ```
 
 `--watch` should display delivery status, output deltas, and completion when the target prints the AgentTalk marker.
+
+Feishu equivalents:
+
+```text
+/send alice-codex-api Please review the API contract in docs/plans/example.md.
+/status msg-xxx
+/response msg-xxx
+```
+
+Use Feishu when the user is working in Feishu chat, asks for bot commands, or cannot run the local `agenttalk` CLI from the current environment.
+
+## Feishu Bot Commands
+
+Supported first-version commands:
+
+```text
+/help
+/agents
+/agents online
+/agent <agent-id>
+/context <agent-id>
+/send <agent-id> <message>
+/status <message-id>
+/response <message-id>
+```
+
+When answering a user about Feishu setup or operation, direct them to:
+
+```text
+docs/guides/feishu-bot-setup.md
+docs/guides/docker-deployment.md
+```
 
 ## Message Shape
 

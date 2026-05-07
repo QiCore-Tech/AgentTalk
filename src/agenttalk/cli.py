@@ -44,12 +44,26 @@ def serve_hub(
     database: Annotated[Path, typer.Option(help="SQLite database path.")] = default_database_path(),
     heartbeat_ttl: Annotated[int, typer.Option(help="Heartbeat TTL in seconds.")] = 30,
     web_dist: Annotated[Path | None, typer.Option(help="Built Web UI dist path.")] = None,
+    public_base_url: Annotated[str, typer.Option(help="Public Web base URL used in integrations.")] = "",
+    feishu_enable: Annotated[bool, typer.Option(help="Enable Feishu long-connection bot.")] = False,
+    feishu_app_id: Annotated[str, typer.Option(help="Feishu app id.")] = "",
+    feishu_app_secret: Annotated[str, typer.Option(help="Feishu app secret.")] = "",
 ) -> None:
+    env_feishu_enable = os.environ.get("FEISHU_ENABLE", "").lower() in {"1", "true", "yes", "on"}
+    resolved_feishu_enable = feishu_enable or env_feishu_enable
+    resolved_feishu_app_id = feishu_app_id or os.environ.get("FEISHU_APP_ID", "")
+    resolved_feishu_app_secret = feishu_app_secret or os.environ.get("FEISHU_APP_SECRET", "")
+    if resolved_feishu_enable and (not resolved_feishu_app_id or not resolved_feishu_app_secret):
+        raise typer.BadParameter("--feishu-enable requires --feishu-app-id/--feishu-app-secret or FEISHU_APP_ID/FEISHU_APP_SECRET")
     settings = HubSettings(
         database_path=database,
         token=resolve_token(token),
         heartbeat_ttl_seconds=heartbeat_ttl,
         web_dist_path=web_dist,
+        public_base_url=public_base_url or os.environ.get("AGENTTALK_PUBLIC_BASE_URL", ""),
+        feishu_enable=resolved_feishu_enable,
+        feishu_app_id=resolved_feishu_app_id,
+        feishu_app_secret=resolved_feishu_app_secret,
     )
     uvicorn.run(create_app(settings), host=host, port=port)
 

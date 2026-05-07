@@ -1,0 +1,21 @@
+services:
+  agenttalk-hub:
+    build: .
+    container_name: agenttalk-hub
+    restart: unless-stopped
+    ports:
+      - "${AGENTTALK_BIND:-0.0.0.0}:${AGENTTALK_PORT:-8787}:8787"
+    environment:
+      AGENTTALK_TOKEN: "${AGENTTALK_TOKEN:?AGENTTALK_TOKEN is required}"
+      AGENTTALK_HOST: "0.0.0.0"
+      AGENTTALK_PORT: "8787"
+      AGENTTALK_DATABASE: "/data/agenttalk.sqlite3"
+      AGENTTALK_PUBLIC_BASE_URL: "${AGENTTALK_PUBLIC_BASE_URL:-}"
+      FEISHU_ENABLE: "${FEISHU_ENABLE:-0}"
+      FEISHU_APP_ID: "${FEISHU_APP_ID:-}"
+      FEISHU_APP_SECRET: "${FEISHU_APP_SECRET:-}"
+    volumes:
+      - agenttalk-data:/data
+
+volumes:
+  agenttalk-data:
