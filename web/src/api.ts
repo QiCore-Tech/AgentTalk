@@ -79,3 +79,15 @@ export async function deleteAgent(shortId: string): Promise<void> {
     method: 'DELETE',
   })
 }
+
+export async function sendToPTY(shortId: string, text: string): Promise<void> {
+  // Send directly to PTY via WebSocket or API
+  const response = await fetch(`${API_BASE}/api/agents/${encodeURIComponent(shortId)}/pty`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ text }),
+  })
+  if (!response.ok) {
+    throw new Error(await response.text())
+  }
+}

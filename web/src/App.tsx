@@ -74,18 +74,35 @@ function App() {
   }, [agents, query, statusFilter])
 
   async function handleSend(agent: Agent, body: string, watch: boolean) {
-    const created = await sendMessage(agent.short_id, body)
-    setMessages((current) => [created, ...current].slice(0, 12))
-    if (watch) {
-      const timer = window.setInterval(async () => {
-        const updated = await getMessage(created.message_id)
-        setMessages((current) =>
-          current.map((message) => (message.message_id === updated.message_id ? updated : message)),
-        )
-        if (['completed', 'failed', 'timeout'].includes(updated.status)) {
-          window.clearInterval(timer)
-        }
-      }, 1200)
+    // Send directly to PTY for immediate terminal interaction
+    try {
+      const response = await fetch(`${window.location.origin}/api/agents/${encodeURIComponent(agent.short_id)}/pty`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${import.meta.env.VITE_AGENTTALK_TOKEN || ''}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text: body + '\r' }),
+      })
+      if (!response.ok) {
+        throw new Error(await response.text())
+      }
+      // Also create a message record for tracking
+      const created = await sendMessage(agent.short_id, body)
+      setMessages((current) => [created, ...current].slice(0, 12))
+      if (watch) {
+        const timer = window.setInterval(async () => {
+          const updated = await getMessage(created.message_id)
+          setMessages((current) =>
+            current.map((message) => (message.message_id === updated.message_id ? updated : message)),
+          )
+          if (['completed', 'failed', 'timeout'].includes(updated.status)) {
+            window.clearInterval(timer)
+          }
+        }, 1200)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -184,7 +201,6 @@ function App() {
         {page === 'detail' && selectedAgent && (
           <AgentDetail
             agent={selectedAgent}
-            context={contexts[selectedAgent.short_id]}
             messages={messages.filter((message) => message.target === selectedAgent.short_id)}
             onSend={handleSend}
             onDelete={handleDeleteAgent}
@@ -321,13 +337,11 @@ function AgentsHome(props: AgentsHomeProps) {
 
 function AgentDetail({
   agent,
-  context,
   messages,
   onSend,
   onDelete,
 }: {
   agent: Agent
-  context?: AgentContext
   messages: Message[]
   onSend: (agent: Agent, body: string, watch: boolean) => Promise<void>
   onDelete: (shortId: string) => void
@@ -350,7 +364,7 @@ function AgentDetail({
           </div>
           <StatusBadge status={agent.status} />
         </div>
-        <LiveTerminal agent={agent} initialText={context?.context || 'Waiting for terminal stream...'} />
+        <LiveTerminal agent={agent} />
       </section>
     </div>
   )
@@ -397,10 +411,18 @@ function QuickStart() {
         <h2>Agent 端快速开始指南</h2>
         <p>在您的开发机器上注册 agent，使其可以被 Hub 管理和远程控制。</p>
 
+        <h3>架构说明</h3>
+        <p><strong>tmux + PTY 双模式架构：</strong></p>
+        <ul>
+          <li><strong>tmux</strong>：负责 agent 进程保活、多窗口管理、会话恢复</li>
+          <li><strong>PTY</strong>：Web UI 中的原生交互式终端（支持 vim、光标、颜色等）</li>
+          <li>两者互补共存，tmux 不可少，PTY 提供更佳的终端体验</li>
+        </ul>
+
         <h3>1. 前置要求</h3>
         <ul>
           <li>Python 3.12+</li>
-          <li>tmux（agent 必须运行在 tmux pane 中）</li>
+          <li>tmux（agent 必须运行在 tmux pane 中，用于保活）</li>
           <li>Git（克隆代码仓库）</li>
         </ul>
 
@@ -545,7 +567,9 @@ agenttalk mode my-agent-001 paste_only`}
 
         <h3>10. 注意事项</h3>
         <ul>
-          <li>Agent 必须运行在 tmux pane 中才能接收远程消息</li>
+          <li>Agent 必须运行在 tmux pane 中才能接收远程消息（tmux 用于保活）</li>
+          <li>Web UI 中的 Live Terminal 使用原生 PTY，支持完整的终端交互（vim、光标、ANSI 颜色）</li>
+          <li>PTY 终端是独立的，不影响 tmux 中的 agent 进程</li>
           <li>auto_submit 模式会自动提交消息，paste_only 仅粘贴不提交</li>
           <li>Relay 需要保持运行才能维持 agent 在线状态</li>
           <li>每个 agent 的 short-id 必须全局唯一</li>
@@ -663,7 +687,7 @@ function StatusPill({ label }: { label: string }) {
   return <span className="status neutral">{label}</span>
 }
 
-function LiveTerminal({ agent, initialText }: { agent: Agent; initialText: string }) {
+function LiveTerminal({ agent }: { agent: Agent }) {
   const ref = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -672,30 +696,54 @@ function LiveTerminal({ agent, initialText }: { agent: Agent; initialText: strin
       cursorBlink: true,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 13,
-      rows: 22,
       theme: { background: '#0f172a', foreground: '#dbeafe' },
+      scrollback: 1000,
+      rows: 24,
+      cols: 80,
     })
     terminal.open(ref.current)
-    terminal.writeln(`AgentTalk terminal: ${agent.short_id}`)
-    terminal.writeln('WebSocket bridge ready for live tmux streaming.')
-    terminal.writeln('')
-    initialText.split('\n').slice(-18).forEach((line) => terminal.writeln(line))
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(`${protocol}//${window.location.host}/ws/terminal/${agent.short_id}`)
-    socket.addEventListener('message', (event) => {
-      terminal.write(String(event.data))
+    const socket = new WebSocket(`${protocol}//${window.location.host}/ws/pty/${agent.short_id}`)
+    socket.binaryType = 'arraybuffer'
+
+    socket.addEventListener('open', () => {
+      terminal.writeln('\x1b[32m[Connected to PTY]\x1b[0m')
+      // Send initial terminal size
+      socket.send(`\x01${terminal.rows}:${terminal.cols}`)
     })
-    terminal.onData((data) => {
+
+    socket.addEventListener('message', (event) => {
+      const data = new Uint8Array(event.data)
       terminal.write(data)
+    })
+
+    socket.addEventListener('close', () => {
+      terminal.writeln('\x1b[31m[Disconnected]\x1b[0m')
+    })
+
+    socket.addEventListener('error', () => {
+      terminal.writeln('\x1b[31m[Connection error]\x1b[0m')
+    })
+
+    terminal.onData((data) => {
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(data)
       }
     })
+
+    const handleResize = () => {
+      // Update terminal size on window resize
+      socket.send(`\x01${terminal.rows}:${terminal.cols}`)
+    }
+    window.addEventListener('resize', handleResize)
+
     return () => {
+      window.removeEventListener('resize', handleResize)
       socket.close()
       terminal.dispose()
     }
-  }, [agent.short_id, initialText, ref])
+  }, [agent.short_id])
 
   return <div className="terminal" data-testid="live-terminal" ref={ref} />
 }

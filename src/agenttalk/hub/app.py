@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -28,6 +29,7 @@ from agenttalk.hub.models import (
 )
 from agenttalk.hub.settings import HubSettings
 from agenttalk.hub.store import AgentFilters, HubStore
+from agenttalk.hub.pty_manager import pty_manager
 from agenttalk.tmux import TmuxClient
 from agenttalk.feishu.service import FeishuAgentTalkService
 from agenttalk.feishu.worker import FeishuEventHandler, FeishuLongConnectionWorker, LarkMessenger
@@ -137,6 +139,52 @@ def create_app(settings: HubSettings) -> FastAPI:
                     await websocket.send_text(f"\r\nUnable to write tmux pane: {exc}\r\n")
         except Exception:
             return
+
+    @app.websocket("/ws/pty/{short_id}")
+    async def pty_websocket(websocket: WebSocket, short_id: str):
+        await websocket.accept()
+        agent = store.get_agent(short_id)
+        if agent is None:
+            await websocket.close(code=4004, reason=f"Agent not found: {short_id}")
+            return
+
+        session = pty_manager.get_or_create(short_id)
+
+        # Handle resize messages and data
+        read_task = None
+        write_task = None
+        try:
+            read_task = asyncio.create_task(session.start_reader(websocket))
+            write_task = asyncio.create_task(session.start_writer())
+
+            while True:
+                message = await websocket.receive()
+                if "text" in message:
+                    # Text message could be resize command or regular data
+                    text = message["text"]
+                    if text.startswith("\x01"):  # Resize command prefix
+                        try:
+                            _, rows, cols = text.split(":")
+                            session.set_size(int(rows), int(cols))
+                        except (ValueError, IndexError):
+                            pass
+                    else:
+                        session.write(text)
+                elif "bytes" in message:
+                    session.write(message["bytes"])
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(f"PTY WebSocket error for {short_id}: {exc}")
+        finally:
+            if read_task and not read_task.done():
+                read_task.cancel()
+            if write_task and not write_task.done():
+                write_task.cancel()
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+            pty_manager.remove(short_id)
 
     @app.post(
         "/api/relays/register",
@@ -361,6 +409,33 @@ def create_app(settings: HubSettings) -> FastAPI:
         if context is None:
             raise api_error(404, "agent_not_found", f"Agent not found: {short_id}")
         return context
+
+    @app.post(
+        "/api/agents/{short_id}/pty",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def write_to_agent_pty(
+        short_id: str,
+        request: dict,
+        hub_store: HubStore = Depends(get_store),
+    ):
+        agent = hub_store.get_agent(short_id)
+        if agent is None:
+            raise api_error(404, "agent_not_found", f"Agent not found: {short_id}")
+        
+        text = request.get("text", "")
+        if not text:
+            raise api_error(400, "bad_request", "Missing 'text' field")
+        
+        # Write directly to PTY
+        success = pty_manager.write_to_agent(short_id, text)
+        if not success:
+            # PTY not active, create one
+            session = pty_manager.get_or_create(short_id)
+            session.write(text)
+        
+        return {"written": True, "short_id": short_id}
 
     if settings.web_dist_path and settings.web_dist_path.exists():
         app.mount("/", StaticFiles(directory=settings.web_dist_path, html=True), name="web")
