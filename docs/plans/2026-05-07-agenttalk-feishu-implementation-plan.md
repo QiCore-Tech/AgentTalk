@@ -10,6 +10,23 @@ Date: 2026-05-07
 
 ## Milestones
 
+### F0: Operator Documentation
+
+Goal: Prepare setup and deployment guides before implementation starts.
+
+Tasks:
+
+1. Write Feishu bot setup guide.
+2. Write Docker deployment guide.
+3. Link guides from README.
+4. Confirm with operator before coding.
+
+Acceptance:
+
+- `docs/guides/feishu-bot-setup.md` exists.
+- `docs/guides/docker-deployment.md` exists.
+- README links both guides.
+
 ### F1: Feishu Settings and Startup Wiring
 
 Goal: Add Feishu configuration to Hub startup without changing core Hub behavior when disabled.
