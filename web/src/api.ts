@@ -91,3 +91,37 @@ export async function sendToPTY(shortId: string, text: string): Promise<void> {
     throw new Error(await response.text())
   }
 }
+
+export interface LLMConfig {
+  base_url: string
+  api_key: string
+  model: string
+  enabled: boolean
+}
+
+export async function getLLMConfig(): Promise<LLMConfig> {
+  return request<LLMConfig>('/api/config/llm')
+}
+
+export async function setLLMConfig(config: LLMConfig): Promise<void> {
+  await request<void>('/api/config/llm', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  })
+}
+
+export interface AutoResumeConfig {
+  enabled: boolean
+  message: string
+}
+
+export async function getAutoResumeConfig(): Promise<AutoResumeConfig> {
+  return request<AutoResumeConfig>('/api/config/auto_resume')
+}
+
+export async function setAutoResumeConfig(config: AutoResumeConfig): Promise<void> {
+  await request<void>('/api/config/auto_resume', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  })
+}

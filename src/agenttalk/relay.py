@@ -9,6 +9,13 @@ from agenttalk.hub.client import HubClient
 from agenttalk.hub.models import AgentHealthReport, AgentStatus, MessageStatus, ReceiveMode
 from agenttalk.tmux import TmuxClient, TmuxPane, is_process_alive
 
+# Optional LLM-based status analysis
+try:
+    from agenttalk.agent_status_analyzer import AgentStatusAnalyzer, AgentActivityState
+    _llm_available = True
+except ImportError:
+    _llm_available = False
+
 
 @dataclass(frozen=True)
 class RelaySyncResult:
@@ -65,11 +72,43 @@ ERROR_PATTERNS = [
     "certificate error",
 ]
 
+# Patterns indicating the agent is paused waiting for LLM/network
+PAUSE_PATTERNS = [
+    "waiting for response",
+    "generating response",
+    "thinking...",
+    "request timed out",
+    "connection reset",
+    "stream ended",
+    "llm error",
+    "provider error",
+    "model error",
+    "api timeout",
+    "network error",
+    "retrying",
+    "rate limited",
+    "service temporarily unavailable",
+    "model is overloaded",
+    "context length exceeded",
+    "token limit",
+    "max tokens",
+]
+
 
 def detect_errors(output: str) -> list[str]:
     output_lower = output.lower()
     found: list[str] = []
     for pattern in ERROR_PATTERNS:
+        if pattern in output_lower:
+            found.append(pattern)
+    return list(set(found))
+
+
+def detect_pause(output: str) -> list[str]:
+    """Detect LLM/provider pause patterns in terminal output."""
+    output_lower = output.lower()
+    found: list[str] = []
+    for pattern in PAUSE_PATTERNS:
         if pattern in output_lower:
             found.append(pattern)
     return list(set(found))
@@ -86,6 +125,17 @@ class AgentTalkRelay:
         self.tmux_client = tmux_client
         self.watch_states: dict[str, WatchState] = {}
         self.health_states: dict[str, AgentHealthState] = {}
+        # Initialize LLM analyzer if available and enabled in config
+        self._llm_analyzer = None
+        if _llm_available and config.llm.enabled:
+            try:
+                self._llm_analyzer = AgentStatusAnalyzer(
+                    api_key=config.llm.api_key or None,
+                    model=config.llm.model,
+                    base_url=config.llm.base_url or None,
+                )
+            except Exception:
+                pass  # LLM analysis disabled if configuration fails
 
     def sync_once(self) -> RelaySyncResult:
         self.hub_client.register_relay(self.config)
@@ -118,17 +168,23 @@ class AgentTalkRelay:
         recent_output = ""
         detected_errors: list[str] = []
         current_fingerprint = ""
+        llm_state_description = ""
+        llm_confidence = 0.0
 
+        detected_pauses: list[str] = []
         try:
-            recent_output = self.tmux_client.capture_pane(binding.tmux_target, lines=50)
+            # Capture last 30 lines for LLM analysis (reduced from 50 to save tokens)
+            recent_output = self.tmux_client.capture_pane(binding.tmux_target, lines=30)
             current_fingerprint = output_fingerprint(recent_output)
             detected_errors = detect_errors(recent_output)
+            detected_pauses = detect_pause(recent_output)
         except Exception:
             pane_alive = False
 
         if pane_alive and pane.pane_pid is not None:
             process_alive = is_process_alive(pane.pane_pid)
 
+        # Determine base status
         if not pane_alive:
             status = AgentStatus.CRASHED
         elif not process_alive:
@@ -143,8 +199,43 @@ class AgentTalkRelay:
             status = AgentStatus.IDLE
             state.consecutive_errors = 0
 
+        # Use LLM for semantic state analysis (if available)
+        if _llm_available and self._llm_analyzer and pane_alive and process_alive:
+            try:
+                analysis = self._llm_analyzer.analyze(binding.short_id, recent_output)
+                llm_state_description = analysis.description
+                llm_confidence = analysis.confidence
+                
+                # Override status based on LLM analysis with confidence threshold
+                if analysis.confidence > 0.7:
+                    llm_status_map = {
+                        AgentActivityState.IDLE: AgentStatus.IDLE,
+                        AgentActivityState.WORKING: AgentStatus.WORKING,
+                        AgentActivityState.THINKING: AgentStatus.WORKING,
+                        AgentActivityState.ERROR: AgentStatus.ERROR,
+                        AgentActivityState.CRASHED: AgentStatus.CRASHED,
+                        AgentActivityState.STUCK: AgentStatus.STALE,
+                        AgentActivityState.COMPLETED: AgentStatus.IDLE,
+                    }
+                    mapped_status = llm_status_map.get(analysis.state)
+                    if mapped_status:
+                        status = mapped_status
+                        if status == AgentStatus.ERROR:
+                            state.consecutive_errors += 1
+                        else:
+                            state.consecutive_errors = max(0, state.consecutive_errors - 1)
+            except Exception:
+                pass  # LLM analysis failed, use base status
+
         state.last_output_fingerprint = current_fingerprint
         state.last_status = status
+
+        # Build enhanced description
+        description = f"Status: {status.value}"
+        if llm_state_description:
+            description += f" | LLM: {llm_state_description} ({llm_confidence:.0%})"
+        if detected_errors:
+            description += f" | Errors: {', '.join(detected_errors[:3])}"
 
         return AgentHealthReport(
             short_id=binding.short_id,
@@ -153,6 +244,7 @@ class AgentTalkRelay:
             recent_output=recent_output[-500:] if recent_output else "",
             output_fingerprint=current_fingerprint,
             detected_errors=detected_errors,
+            detected_pauses=detected_pauses,
             status=status,
         )
 

@@ -118,3 +118,8 @@ def is_process_alive(pid: int) -> bool:
         return True
     except (OSError, ProcessLookupError):
         return False
+
+
+def output_fingerprint(output: str) -> str:
+    import hashlib
+    return hashlib.sha256(output.encode()).hexdigest()[:16]

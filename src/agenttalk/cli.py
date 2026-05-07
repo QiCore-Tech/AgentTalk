@@ -21,8 +21,10 @@ from agenttalk.tmux import TmuxClient
 app = typer.Typer(help="AgentTalk CLI.")
 hub_app = typer.Typer(help="Run and manage the AgentTalk Hub.")
 daemon_app = typer.Typer(help="Run the local AgentTalk relay.")
+config_app = typer.Typer(help="Manage Hub configuration.")
 app.add_typer(hub_app, name="hub")
 app.add_typer(daemon_app, name="daemon")
+app.add_typer(config_app, name="config")
 
 
 def resolve_token(token: str | None) -> str:
@@ -387,6 +389,53 @@ def watch_message(*, message_id: str, resolved_hub_url: str, resolved_token: str
             return
         time.sleep(1)
     typer.echo("[timeout]")
+
+
+@config_app.command("auto-resume")
+def config_auto_resume(
+    enabled: Annotated[bool | None, typer.Option(help="Enable or disable auto resume.")] = None,
+    message: Annotated[str | None, typer.Option(help="Resume message to send.")] = None,
+    hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
+    token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    resolved_token = token or config.token or os.environ.get("AGENTTALK_TOKEN")
+    if not resolved_token:
+        raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
+    resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    
+    # Get current config
+    response = httpx.get(
+        f"{resolved_hub_url.rstrip('/')}/api/config/auto_resume",
+        headers=auth_headers(resolved_token),
+        timeout=10,
+    )
+    if response.status_code >= 400:
+        typer.echo(response.text, err=True)
+        raise typer.Exit(1)
+    current = response.json()
+    
+    # Update if options provided
+    if enabled is not None or message is not None:
+        new_config = {
+            "enabled": enabled if enabled is not None else current["enabled"],
+            "message": message if message is not None else current["message"],
+        }
+        response = httpx.post(
+            f"{resolved_hub_url.rstrip('/')}/api/config/auto_resume",
+            headers=auth_headers(resolved_token),
+            json=new_config,
+            timeout=10,
+        )
+        if response.status_code >= 400:
+            typer.echo(response.text, err=True)
+            raise typer.Exit(1)
+        typer.echo(f"Auto resume: {'enabled' if new_config['enabled'] else 'disabled'}")
+        typer.echo(f"Resume message: {new_config['message']}")
+    else:
+        typer.echo(f"Auto resume: {'enabled' if current['enabled'] else 'disabled'}")
+        typer.echo(f"Resume message: {current['message']}")
 
 
 @daemon_app.command("start")

@@ -60,6 +60,12 @@ def create_app(settings: HubSettings) -> FastAPI:
             except Exception:
                 pass
 
+    # Initialize default configs
+    if store.get_config("auto_resume.enabled") is None:
+        store.set_config("auto_resume.enabled", "1")
+    if store.get_config("auto_resume.message") is None:
+        store.set_config("auto_resume.message", "继续")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nonlocal feishu_messenger, feishu_service
@@ -319,6 +325,21 @@ def create_app(settings: HubSettings) -> FastAPI:
             hub_store.create_alert(short_id, alert_type, alert_msg)
             maybe_alert_feishu(short_id, alert_type, alert_msg, agent.owner)
         
+        # Auto-resume: only works when LLM monitoring is enabled
+        llm_enabled = hub_store.get_config("llm.enabled") == "1"
+        auto_resume_enabled = hub_store.get_config("auto_resume.enabled") == "1"
+        if llm_enabled and auto_resume_enabled and report.detected_pauses:
+            resume_message = hub_store.get_config("auto_resume.message") or "继续"
+            # Only auto-resume if not already in error/crashed state
+            if report.status not in (AgentStatus.CRASHED, AgentStatus.ERROR):
+                try:
+                    session = pty_manager.get_or_create(short_id, agent.tmux_target)
+                    session.write(resume_message + "\n")
+                    # Also update agent status to working
+                    hub_store.update_agent_status(short_id, AgentStatus.WORKING)
+                except Exception:
+                    pass  # Fail silently if auto-resume fails
+        
         return updated
 
     @app.get(
@@ -473,6 +494,38 @@ def create_app(settings: HubSettings) -> FastAPI:
             session.write(text)
         
         return {"written": True, "short_id": short_id}
+
+    @app.get("/api/config/llm")
+    def get_llm_config(_: None = Depends(require_token)) -> dict:
+        store = get_store()
+        base_url = store.get_config("llm.base_url") or ""
+        api_key = store.get_config("llm.api_key") or ""
+        model = store.get_config("llm.model") or "gpt-4o-mini"
+        enabled = store.get_config("llm.enabled") == "1"
+        return {"base_url": base_url, "api_key": api_key, "model": model, "enabled": enabled}
+
+    @app.post("/api/config/llm")
+    def set_llm_config(body: dict, _: None = Depends(require_token)) -> dict:
+        store = get_store()
+        store.set_config("llm.base_url", body.get("base_url", ""))
+        store.set_config("llm.api_key", body.get("api_key", ""))
+        store.set_config("llm.model", body.get("model", "gpt-4o-mini"))
+        store.set_config("llm.enabled", "1" if body.get("enabled", False) else "0")
+        return {"ok": True}
+
+    @app.get("/api/config/auto_resume")
+    def get_auto_resume_config(_: None = Depends(require_token)) -> dict:
+        store = get_store()
+        enabled = store.get_config("auto_resume.enabled") == "1"
+        message = store.get_config("auto_resume.message") or "继续"
+        return {"enabled": enabled, "message": message}
+
+    @app.post("/api/config/auto_resume")
+    def set_auto_resume_config(body: dict, _: None = Depends(require_token)) -> dict:
+        store = get_store()
+        store.set_config("auto_resume.enabled", "1" if body.get("enabled", True) else "0")
+        store.set_config("auto_resume.message", body.get("message", "继续"))
+        return {"ok": True}
 
     if settings.web_dist_path and settings.web_dist_path.exists():
         app.mount("/", StaticFiles(directory=settings.web_dist_path, html=True), name="web")

@@ -77,6 +77,7 @@ class AgentHealthReport(BaseModel):
     recent_output: str = Field(default="", max_length=2000)
     output_fingerprint: str = Field(default="", max_length=64)
     detected_errors: list[str] = Field(default_factory=list)
+    detected_pauses: list[str] = Field(default_factory=list)
     status: AgentStatus = AgentStatus.IDLE
 
 

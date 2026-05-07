@@ -29,6 +29,14 @@ class AgentBinding(BaseModel):
     receive_mode: ReceiveMode = ReceiveMode.AUTO_SUBMIT
 
 
+class LLMConfig(BaseModel):
+    """LLM configuration for agent status analysis"""
+    base_url: str = ""  # e.g., "http://192.168.31.100:9000/v1" or "https://api.openai.com/v1"
+    api_key: str = ""   # API key (can be empty for local LLMs)
+    model: str = "gpt-4o-mini"  # Model name
+    enabled: bool = False  # Whether to use LLM for status analysis
+
+
 class AgentTalkConfig(BaseModel):
     hub_url: str = "http://127.0.0.1:8787"
     token: str = ""
@@ -36,6 +44,7 @@ class AgentTalkConfig(BaseModel):
     host_name: str = Field(default_factory=socket.gethostname)
     user_name: str = Field(default_factory=lambda: os.environ.get("USER", "unknown"))
     agents: list[AgentBinding] = field(default_factory=list)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
 
 
 def load_config(path: Path | None = None) -> AgentTalkConfig:

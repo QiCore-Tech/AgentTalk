@@ -12,6 +12,8 @@
 AgentTalk 是一个轻量级局域网 Agent 通信系统，面向运行在 tmux pane 里的 AI agent CLI。Hub 是 server，开发者机器是 client。Hub 提供注册中心、消息路由、Web UI（含原生 PTY 终端）和可选飞书机器人；client relay 负责本机 tmux 注册、消息注入、上下文采集和反馈监控。
 
 > **架构说明**：tmux 用于 agent 进程保活和多窗口管理，PTY 用于 Web UI 中的原生交互式终端。两者互补共存。
+> 
+> **智能状态监测**：AgentTalk 支持通过 LLM 定期分析 terminal 输出来判断 agent 真实状态（idle/working/thinking/error/stuck），不发送任何消息干扰 agent 工作。
 
 ### 快速开始
 

@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115.0",
   "httpx>=0.28.0",
+  "openai>=1.0.0",
   "pydantic>=2.9.0",
   "typer>=0.15.0",
   "uvicorn[standard]>=0.32.0",
@@ -21,6 +22,9 @@ dev = [
 feishu = [
     "lark-oapi>=1.5.5",
     "nest-asyncio>=1.6.0",
+]
+llm = [
+    "openai>=1.0.0",
 ]
 
 [project.scripts]

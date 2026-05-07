@@ -4,16 +4,21 @@ import '@xterm/xterm/css/xterm.css'
 import {
   type Agent,
   type AgentContext,
+  type LLMConfig,
   type Message,
   deleteAgent,
   getAgentContext,
+  getAutoResumeConfig,
+  getLLMConfig,
   getMessage,
   listAgents,
   sendMessage,
+  setAutoResumeConfig,
+  setLLMConfig,
 } from './api'
 import './App.css'
 
-type Page = 'agents' | 'context' | 'detail' | 'quickstart'
+type Page = 'agents' | 'context' | 'detail' | 'quickstart' | 'settings'
 
 function statusLabel(status: Agent['status']) {
   return status.charAt(0).toUpperCase() + status.slice(1)
@@ -167,6 +172,9 @@ function App() {
           <button className={page === 'quickstart' ? 'active' : ''} onClick={() => { setPage('quickstart'); setMenuOpen(false) }}>
             Quick Start
           </button>
+          <button className={page === 'settings' ? 'active' : ''} onClick={() => { setPage('settings'); setMenuOpen(false) }}>
+            Settings
+          </button>
         </nav>
         <div className="sidebarStats">
           <span>{agents.length} registered</span>
@@ -241,6 +249,8 @@ function App() {
 
         {page === 'quickstart' && <QuickStart />}
 
+        {page === 'settings' && <SettingsPage />}
+
         {/* Mobile Bottom Navigation */}
         <nav className="bottomNav">
           <button className={page === 'agents' ? 'active' : ''} onClick={() => setPage('agents')}>
@@ -262,6 +272,10 @@ function App() {
           <button className={page === 'quickstart' ? 'active' : ''} onClick={() => setPage('quickstart')}>
             <span className="bottomNavIcon">📖</span>
             Guide
+          </button>
+          <button className={page === 'settings' ? 'active' : ''} onClick={() => setPage('settings')}>
+            <span className="bottomNavIcon">⚙️</span>
+            Settings
           </button>
         </nav>
 
@@ -716,6 +730,133 @@ agenttalk mode my-agent-001 paste_only`}
           <li>Relay 需要保持运行才能维持 agent 在线状态</li>
           <li>每个 agent 的 short-id 必须全局唯一</li>
         </ul>
+      </section>
+    </div>
+  )
+}
+
+function SettingsPage() {
+  const [llmConfig, setLlmConfig] = useState<LLMConfig>({
+    base_url: '',
+    api_key: '',
+    model: 'gpt-4o-mini',
+    enabled: false,
+  })
+  const [autoResume, setAutoResume] = useState({
+    enabled: true,
+    message: '继续',
+  })
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    Promise.all([getLLMConfig(), getAutoResumeConfig()])
+      .then(([llm, resume]) => {
+        setLlmConfig(llm)
+        setAutoResume(resume)
+      })
+      .catch(() => setMessage('Failed to load config'))
+  }, [])
+
+  async function handleSave() {
+    setSaving(true)
+    setMessage('')
+    try {
+      await Promise.all([setLLMConfig(llmConfig), setAutoResumeConfig(autoResume)])
+      setMessage('Saved successfully')
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="quickstart">
+      <section>
+        <h2>Settings</h2>
+
+        <h3 style={{ marginTop: '2rem' }}>Auto Resume</h3>
+        <p>Automatically send resume message when agent is paused due to LLM/network issues. Requires LLM analysis to be enabled.</p>
+        <div style={{ marginTop: '1rem' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+            <input
+              type="checkbox"
+              checked={autoResume.enabled}
+              onChange={(e) => setAutoResume({ ...autoResume, enabled: e.target.checked })}
+            />
+            Enable auto resume
+          </label>
+          <div style={{ marginBottom: '1.5rem' }}>
+            <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 500 }}>Resume Message</label>
+            <input
+              type="text"
+              value={autoResume.message}
+              onChange={(e) => setAutoResume({ ...autoResume, message: e.target.value })}
+              placeholder="继续"
+              style={{ width: '100%', maxWidth: '200px' }}
+            />
+          </div>
+        </div>
+
+        <h3 style={{ marginTop: '2rem' }}>LLM Configuration</h3>
+        <p>Configure the LLM for agent status analysis.</p>
+        <div style={{ marginTop: '1rem' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+            <input
+              type="checkbox"
+              checked={llmConfig.enabled}
+              onChange={(e) => setLlmConfig({ ...llmConfig, enabled: e.target.checked })}
+            />
+            Enable LLM analysis
+          </label>
+
+          <div style={{ marginBottom: '1rem' }}>
+            <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 500 }}>Base URL</label>
+            <input
+              type="text"
+              value={llmConfig.base_url}
+              onChange={(e) => setLlmConfig({ ...llmConfig, base_url: e.target.value })}
+              placeholder="https://api.openai.com/v1 or http://localhost:8000/v1"
+              style={{ width: '100%', maxWidth: '400px' }}
+              disabled={!llmConfig.enabled}
+            />
+          </div>
+
+          <div style={{ marginBottom: '1rem' }}>
+            <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 500 }}>API Key</label>
+            <input
+              type="password"
+              value={llmConfig.api_key}
+              onChange={(e) => setLlmConfig({ ...llmConfig, api_key: e.target.value })}
+              placeholder="sk-..."
+              style={{ width: '100%', maxWidth: '400px' }}
+              disabled={!llmConfig.enabled}
+            />
+          </div>
+
+          <div style={{ marginBottom: '1.5rem' }}>
+            <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 500 }}>Model</label>
+            <input
+              type="text"
+              value={llmConfig.model}
+              onChange={(e) => setLlmConfig({ ...llmConfig, model: e.target.value })}
+              placeholder="gpt-4o-mini"
+              style={{ width: '100%', maxWidth: '400px' }}
+              disabled={!llmConfig.enabled}
+            />
+          </div>
+        </div>
+
+        <button className="primary" onClick={handleSave} disabled={saving}>
+          {saving ? 'Saving...' : 'Save All'}
+        </button>
+
+        {message && (
+          <div style={{ marginTop: '1rem', color: message.includes('success') ? 'green' : 'red' }}>
+            {message}
+          </div>
+        )}
       </section>
     </div>
   )

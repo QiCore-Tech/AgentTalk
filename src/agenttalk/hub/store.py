@@ -135,6 +135,11 @@ class HubStore:
 
                 CREATE INDEX IF NOT EXISTS idx_alerts_short_id ON agent_alerts(short_id);
                 CREATE INDEX IF NOT EXISTS idx_alerts_created ON agent_alerts(created_at);
+
+                CREATE TABLE IF NOT EXISTS config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 """
             )
 
@@ -457,6 +462,14 @@ class HubStore:
             )
         return AgentContextResponse(short_id=short_id, context=bounded, updated_at=now)
 
+    def update_agent_status(self, short_id: str, status: AgentStatus) -> None:
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE agents SET status = ?, updated_at = ? WHERE short_id = ?",
+                (status.value, now, short_id),
+            )
+
     def get_agent_context(self, short_id: str) -> AgentContextResponse | None:
         if self.get_agent(short_id) is None:
             return None
@@ -580,3 +593,15 @@ class HubStore:
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
+
+    def get_config(self, key: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
+            return str(row["value"]) if row else None
+
+    def set_config(self, key: str, value: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
