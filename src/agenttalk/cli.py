@@ -391,8 +391,9 @@ def watch_message(*, message_id: str, resolved_hub_url: str, resolved_token: str
     typer.echo("[timeout]")
 
 
-@config_app.command("auto-resume")
+@app.command("auto-resume")
 def config_auto_resume(
+    short_id: str,
     enabled: Annotated[bool | None, typer.Option(help="Enable or disable auto resume.")] = None,
     message: Annotated[str | None, typer.Option(help="Resume message to send.")] = None,
     hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
@@ -405,9 +406,9 @@ def config_auto_resume(
         raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
     
-    # Get current config
+    # Get current config for this agent
     response = httpx.get(
-        f"{resolved_hub_url.rstrip('/')}/api/config/auto_resume",
+        f"{resolved_hub_url.rstrip('/')}/api/agents/{short_id}/auto_resume",
         headers=auth_headers(resolved_token),
         timeout=10,
     )
@@ -423,7 +424,7 @@ def config_auto_resume(
             "message": message if message is not None else current["message"],
         }
         response = httpx.post(
-            f"{resolved_hub_url.rstrip('/')}/api/config/auto_resume",
+            f"{resolved_hub_url.rstrip('/')}/api/agents/{short_id}/auto_resume",
             headers=auth_headers(resolved_token),
             json=new_config,
             timeout=10,
@@ -431,10 +432,10 @@ def config_auto_resume(
         if response.status_code >= 400:
             typer.echo(response.text, err=True)
             raise typer.Exit(1)
-        typer.echo(f"Auto resume: {'enabled' if new_config['enabled'] else 'disabled'}")
+        typer.echo(f"Agent {short_id} auto resume: {'enabled' if new_config['enabled'] else 'disabled'}")
         typer.echo(f"Resume message: {new_config['message']}")
     else:
-        typer.echo(f"Auto resume: {'enabled' if current['enabled'] else 'disabled'}")
+        typer.echo(f"Agent {short_id} auto resume: {'enabled' if current['enabled'] else 'disabled'}")
         typer.echo(f"Resume message: {current['message']}")
 
 

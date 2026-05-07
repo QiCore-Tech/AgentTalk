@@ -8,12 +8,11 @@ import {
   type Message,
   deleteAgent,
   getAgentContext,
-  getAutoResumeConfig,
   getLLMConfig,
   getMessage,
   listAgents,
   sendMessage,
-  setAutoResumeConfig,
+  setAgentAutoResume,
   setLLMConfig,
 } from './api'
 import './App.css'
@@ -735,6 +734,57 @@ agenttalk mode my-agent-001 paste_only`}
   )
 }
 
+function AgentAutoResumeConfig({ agent }: { agent: Agent }) {
+  const [config, setConfig] = useState({
+    enabled: agent.auto_resume_enabled ?? true,
+    message: agent.auto_resume_message ?? '继续',
+  })
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      await setAgentAutoResume(agent.short_id, config)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err) {
+      console.error('Failed to save auto-resume config:', err)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{ padding: '0.75rem', border: '1px solid #e2e8f0', borderRadius: '0.5rem', marginBottom: '0.75rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+        <strong>{agent.short_id}</strong>
+        <span style={{ fontSize: '0.75rem', color: '#64748b' }}>{agent.kind}</span>
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+        <input
+          type="checkbox"
+          checked={config.enabled}
+          onChange={(e) => setConfig({ ...config, enabled: e.target.checked })}
+        />
+        Enable auto resume
+      </label>
+      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+        <input
+          type="text"
+          value={config.message}
+          onChange={(e) => setConfig({ ...config, message: e.target.value })}
+          placeholder="继续"
+          style={{ flex: 1, maxWidth: '200px' }}
+        />
+        <button className="primary" onClick={handleSave} disabled={saving} style={{ padding: '0.25rem 0.75rem', fontSize: '0.875rem' }}>
+          {saving ? 'Saving...' : saved ? 'Saved!' : 'Save'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function SettingsPage() {
   const [llmConfig, setLlmConfig] = useState<LLMConfig>({
     base_url: '',
@@ -742,28 +792,25 @@ function SettingsPage() {
     model: 'gpt-4o-mini',
     enabled: false,
   })
-  const [autoResume, setAutoResume] = useState({
-    enabled: true,
-    message: '继续',
-  })
+  const [agents, setAgents] = useState<Agent[]>([])
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    Promise.all([getLLMConfig(), getAutoResumeConfig()])
-      .then(([llm, resume]) => {
+    Promise.all([getLLMConfig(), listAgents()])
+      .then(([llm, agentList]) => {
         setLlmConfig(llm)
-        setAutoResume(resume)
+        setAgents(agentList)
       })
       .catch(() => setMessage('Failed to load config'))
   }, [])
 
-  async function handleSave() {
+  async function handleSaveLLM() {
     setSaving(true)
     setMessage('')
     try {
-      await Promise.all([setLLMConfig(llmConfig), setAutoResumeConfig(autoResume)])
-      setMessage('Saved successfully')
+      await setLLMConfig(llmConfig)
+      setMessage('LLM config saved successfully')
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err))
     } finally {
@@ -776,27 +823,16 @@ function SettingsPage() {
       <section>
         <h2>Settings</h2>
 
-        <h3 style={{ marginTop: '2rem' }}>Auto Resume</h3>
-        <p>Automatically send resume message when agent is paused due to LLM/network issues. Requires LLM analysis to be enabled.</p>
+        <h3 style={{ marginTop: '2rem' }}>Per-Agent Auto Resume</h3>
+        <p>Configure auto-resume for each agent individually. Requires LLM analysis to be enabled.</p>
         <div style={{ marginTop: '1rem' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-            <input
-              type="checkbox"
-              checked={autoResume.enabled}
-              onChange={(e) => setAutoResume({ ...autoResume, enabled: e.target.checked })}
-            />
-            Enable auto resume
-          </label>
-          <div style={{ marginBottom: '1.5rem' }}>
-            <label style={{ display: 'block', marginBottom: '0.25rem', fontWeight: 500 }}>Resume Message</label>
-            <input
-              type="text"
-              value={autoResume.message}
-              onChange={(e) => setAutoResume({ ...autoResume, message: e.target.value })}
-              placeholder="继续"
-              style={{ width: '100%', maxWidth: '200px' }}
-            />
-          </div>
+          {agents.length === 0 ? (
+            <p style={{ color: '#64748b' }}>No agents registered.</p>
+          ) : (
+            agents.map((agent) => (
+              <AgentAutoResumeConfig key={agent.short_id} agent={agent} />
+            ))
+          )}
         </div>
 
         <h3 style={{ marginTop: '2rem' }}>LLM Configuration</h3>
@@ -848,8 +884,8 @@ function SettingsPage() {
           </div>
         </div>
 
-        <button className="primary" onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving...' : 'Save All'}
+        <button className="primary" onClick={handleSaveLLM} disabled={saving}>
+          {saving ? 'Saving...' : 'Save LLM Config'}
         </button>
 
         {message && (

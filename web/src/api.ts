@@ -12,6 +12,8 @@ export interface Agent {
   status: AgentStatus
   updated_at: string
   relay_last_seen_at?: string | null
+  auto_resume_enabled?: boolean
+  auto_resume_message?: string
 }
 
 export interface Message {
@@ -115,12 +117,12 @@ export interface AutoResumeConfig {
   message: string
 }
 
-export async function getAutoResumeConfig(): Promise<AutoResumeConfig> {
-  return request<AutoResumeConfig>('/api/config/auto_resume')
+export async function getAgentAutoResume(shortId: string): Promise<AutoResumeConfig> {
+  return request<AutoResumeConfig>(`/api/agents/${encodeURIComponent(shortId)}/auto_resume`)
 }
 
-export async function setAutoResumeConfig(config: AutoResumeConfig): Promise<void> {
-  await request<void>('/api/config/auto_resume', {
+export async function setAgentAutoResume(shortId: string, config: AutoResumeConfig): Promise<void> {
+  await request<void>(`/api/agents/${encodeURIComponent(shortId)}/auto_resume`, {
     method: 'POST',
     body: JSON.stringify(config),
   })

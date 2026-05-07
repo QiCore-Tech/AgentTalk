@@ -60,12 +60,6 @@ def create_app(settings: HubSettings) -> FastAPI:
             except Exception:
                 pass
 
-    # Initialize default configs
-    if store.get_config("auto_resume.enabled") is None:
-        store.set_config("auto_resume.enabled", "1")
-    if store.get_config("auto_resume.message") is None:
-        store.set_config("auto_resume.message", "继续")
-
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nonlocal feishu_messenger, feishu_service
@@ -325,16 +319,15 @@ def create_app(settings: HubSettings) -> FastAPI:
             hub_store.create_alert(short_id, alert_type, alert_msg)
             maybe_alert_feishu(short_id, alert_type, alert_msg, agent.owner)
         
-        # Auto-resume: only works when LLM monitoring is enabled
+        # Auto-resume: only works when LLM monitoring is enabled and per-agent config allows it
         llm_enabled = hub_store.get_config("llm.enabled") == "1"
-        auto_resume_enabled = hub_store.get_config("auto_resume.enabled") == "1"
-        if llm_enabled and auto_resume_enabled and report.detected_pauses:
-            resume_message = hub_store.get_config("auto_resume.message") or "继续"
+        agent_auto_resume_enabled, agent_auto_resume_message = hub_store.get_agent_auto_resume(short_id)
+        if llm_enabled and agent_auto_resume_enabled and report.detected_pauses:
             # Only auto-resume if not already in error/crashed state
             if report.status not in (AgentStatus.CRASHED, AgentStatus.ERROR):
                 try:
                     session = pty_manager.get_or_create(short_id, agent.tmux_target)
-                    session.write(resume_message + "\n")
+                    session.write(agent_auto_resume_message + "\n")
                     # Also update agent status to working
                     hub_store.update_agent_status(short_id, AgentStatus.WORKING)
                 except Exception:
@@ -513,18 +506,33 @@ def create_app(settings: HubSettings) -> FastAPI:
         store.set_config("llm.enabled", "1" if body.get("enabled", False) else "0")
         return {"ok": True}
 
-    @app.get("/api/config/auto_resume")
-    def get_auto_resume_config(_: None = Depends(require_token)) -> dict:
-        store = get_store()
-        enabled = store.get_config("auto_resume.enabled") == "1"
-        message = store.get_config("auto_resume.message") or "继续"
+    @app.get("/api/agents/{short_id}/auto_resume")
+    def get_agent_auto_resume(
+        short_id: str,
+        hub_store: HubStore = Depends(get_store),
+        _: None = Depends(require_token),
+    ) -> dict:
+        agent = hub_store.get_agent(short_id)
+        if agent is None:
+            raise api_error(404, "agent_not_found", f"Agent not found: {short_id}")
+        enabled, message = hub_store.get_agent_auto_resume(short_id)
         return {"enabled": enabled, "message": message}
 
-    @app.post("/api/config/auto_resume")
-    def set_auto_resume_config(body: dict, _: None = Depends(require_token)) -> dict:
-        store = get_store()
-        store.set_config("auto_resume.enabled", "1" if body.get("enabled", True) else "0")
-        store.set_config("auto_resume.message", body.get("message", "继续"))
+    @app.post("/api/agents/{short_id}/auto_resume")
+    def set_agent_auto_resume(
+        short_id: str,
+        body: dict,
+        hub_store: HubStore = Depends(get_store),
+        _: None = Depends(require_token),
+    ) -> dict:
+        agent = hub_store.get_agent(short_id)
+        if agent is None:
+            raise api_error(404, "agent_not_found", f"Agent not found: {short_id}")
+        hub_store.set_agent_auto_resume(
+            short_id,
+            enabled=body.get("enabled", True),
+            message=body.get("message", "继续"),
+        )
         return {"ok": True}
 
     if settings.web_dist_path and settings.web_dist_path.exists():

@@ -88,6 +88,8 @@ class HubStore:
                     updated_at TEXT NOT NULL,
                     health_output_fingerprint TEXT DEFAULT '',
                     health_detected_errors TEXT DEFAULT '',
+                    auto_resume_enabled INTEGER DEFAULT 1,
+                    auto_resume_message TEXT DEFAULT '继续',
                     FOREIGN KEY(machine_id) REFERENCES relays(machine_id)
                 );
 
@@ -142,6 +144,12 @@ class HubStore:
                 );
                 """
             )
+            # Migrate existing databases: add auto_resume columns if missing
+            try:
+                conn.execute("SELECT auto_resume_enabled FROM agents LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute("ALTER TABLE agents ADD COLUMN auto_resume_enabled INTEGER DEFAULT 1")
+                conn.execute("ALTER TABLE agents ADD COLUMN auto_resume_message TEXT DEFAULT '继续'")
 
     def register_relay(self, request: RelayRegisterRequest) -> RelayResponse:
         now = format_time(utc_now())
@@ -273,6 +281,8 @@ class HubStore:
                     a.updated_at,
                     a.health_output_fingerprint,
                     a.health_detected_errors,
+                    a.auto_resume_enabled,
+                    a.auto_resume_message,
                     r.last_seen_at AS relay_last_seen_at
                 FROM agents a
                 LEFT JOIN relays r ON r.machine_id = a.machine_id
@@ -302,6 +312,8 @@ class HubStore:
                     a.updated_at,
                     a.health_output_fingerprint,
                     a.health_detected_errors,
+                    a.auto_resume_enabled,
+                    a.auto_resume_message,
                     r.last_seen_at AS relay_last_seen_at
                 FROM agents a
                 LEFT JOIN relays r ON r.machine_id = a.machine_id
@@ -548,6 +560,25 @@ class HubStore:
             ).fetchone()
         return str(row["owner_open_id"]) if row else ""
 
+    def get_agent_auto_resume(self, short_id: str) -> tuple[bool, str]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT auto_resume_enabled, auto_resume_message FROM agents WHERE short_id = ?",
+                (short_id,),
+            ).fetchone()
+        if row is None:
+            return True, "继续"
+        enabled = bool(row["auto_resume_enabled"]) if row["auto_resume_enabled"] is not None else True
+        message = str(row["auto_resume_message"]) if row["auto_resume_message"] is not None else "继续"
+        return enabled, message
+
+    def set_agent_auto_resume(self, short_id: str, enabled: bool, message: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE agents SET auto_resume_enabled = ?, auto_resume_message = ? WHERE short_id = ?",
+                (1 if enabled else 0, message, short_id),
+            )
+
     def _agent_from_row(self, row: sqlite3.Row) -> AgentResponse:
         stored_status = AgentStatus(str(row["status"]))
         relay_last_seen_at = row["relay_last_seen_at"]
@@ -566,6 +597,8 @@ class HubStore:
             relay_last_seen_at=str(relay_last_seen_at) if relay_last_seen_at is not None else None,
             health_output_fingerprint=str(row["health_output_fingerprint"] or ""),
             health_detected_errors=errors_str.split(",") if errors_str else [],
+            auto_resume_enabled=bool(row["auto_resume_enabled"]) if row["auto_resume_enabled"] is not None else True,
+            auto_resume_message=str(row["auto_resume_message"] or "继续"),
         )
 
     def _derive_status(self, *, stored_status: AgentStatus, relay_last_seen_at: str | None) -> AgentStatus:

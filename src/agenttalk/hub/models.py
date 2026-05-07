@@ -102,6 +102,8 @@ class AgentResponse(BaseModel):
     relay_last_seen_at: str | None = None
     health_output_fingerprint: str | None = None
     health_detected_errors: list[str] = Field(default_factory=list)
+    auto_resume_enabled: bool = True
+    auto_resume_message: str = "继续"
 
 
 class AgentListResponse(BaseModel):
