@@ -127,7 +127,15 @@ FEISHU_APP_SECRET=xxx
 
 ## One-Command Startup
 
-Copy the environment template and start the Hub:
+Recommended:
+
+```bash
+scripts/deploy-hub.sh
+```
+
+The script creates or updates `.env`, builds the Hub image, starts Docker Compose, and prints the Web URL and token.
+
+Manual equivalent:
 
 ```bash
 cp .env.example .env
@@ -178,16 +186,23 @@ server {
 Each developer machine points its local relay to the container URL:
 
 ```bash
-agenttalk setup http://192.168.1.20:8787 --token change-me
-agenttalk discover
-agenttalk register --short-id alice-codex-api --tmux-target dev:0.1 --owner alice --kind codex
-agenttalk daemon start
+scripts/start-client.sh \
+  --hub-url http://192.168.1.20:8787 \
+  --token change-me \
+  --short-id alice-codex-api \
+  --tmux-target dev:0.1 \
+  --owner alice \
+  --kind codex
 ```
 
 For domain:
 
 ```bash
-agenttalk setup https://agenttalk.company.lan --token change-me
+scripts/start-client.sh \
+  --hub-url https://agenttalk.company.lan \
+  --token change-me \
+  --short-id alice-codex-api \
+  --tmux-target dev:0.1
 ```
 
 ## Feishu With Docker
