@@ -451,62 +451,67 @@ cd agenttalk
 # 安装依赖（使用 uv 或 pip）
 uv sync --extra feishu
 # 或
-pip install -e ".[feishu]"`}
-        </pre>
+pip install -e ".[feishu]"
 
-        <h3>3. 配置 Hub 连接</h3>
-        <pre className="codeBlock">
-{`# 设置 Hub 地址和 Token
+# 配置 Hub 连接
 agenttalk setup ${hubUrl} --token ${token}`}
         </pre>
 
-        <h3>4. 发现 tmux pane</h3>
-        <pre className="codeBlock">
-{`# 查看可用的 tmux pane
-agenttalk discover
+        <h3>3. 快速设置（推荐）</h3>
+        <p>使用便捷脚本一键创建 tmux session、注册 pane、启动监控。AI agent 由您自己启动。</p>
 
-# 或使用脚本
-scripts/start-client.sh --discover`}
+        <pre className="codeBlock">
+{`# 1. 检查环境
+./scripts/check-env.sh
+
+# 2. 一键设置 tmux + 注册 + 监控（不启动 AI agent）
+cd /path/to/your/project
+./scripts/setup-pane.sh
+
+# 3. 在 tmux 中启动您的 AI Agent
+tmux attach -t <session-name>
+
+# 启动 Claude Code
+claude
+
+# 或启动 Codex
+codex`}
         </pre>
 
-        <h3>5. 注册 Agent</h3>
+        <h3>4. 管理监控</h3>
         <pre className="codeBlock">
-{`# 方法 1：使用 CLI
+{`# 查看所有 agent 状态
+./scripts/start-all-agents.sh --status
+
+# 启动所有已注册 agent 的监控
+./scripts/start-all-agents.sh
+
+# 停止监控
+./scripts/start-all-agents.sh --stop
+
+# 实时查看日志
+./scripts/start-all-agents.sh --monitor`}
+        </pre>
+
+        <h3>5. 手动注册（高级）</h3>
+        <p>如果需要更精细的控制，可以手动注册：</p>
+        <pre className="codeBlock">
+{`# 先创建 tmux session
+tmux new-session -d -s my-session
+
+# 注册 pane
 agenttalk register \\
   --short-id my-agent-001 \\
-  --tmux-target dev:0.1 \\
+  --tmux-target my-session:0.0 \\
   --owner $(whoami) \\
   --kind codex \\
   --workspace /path/to/project
 
-# 方法 2：使用启动脚本
-scripts/start-client.sh \\
-  --hub-url ${hubUrl} \\
-  --token ${token} \\
-  --short-id my-agent-001 \\
-  --tmux-target dev:0.1 \\
-  --owner $(whoami) \\
-  --kind codex \\
-  --workspace /path/to/project`}
+# 启动 relay
+agenttalk daemon start`}
         </pre>
 
-        <h3>6. 启动 Relay（守护进程）</h3>
-        <pre className="codeBlock">
-{`# 启动后台 relay，定期同步 agent 状态
-agenttalk daemon start
-
-# 或一次性同步
-agenttalk daemon start --once
-
-# 使用脚本启动
-scripts/start-client.sh \\
-  --hub-url ${hubUrl} \\
-  --token ${token} \\
-  --short-id my-agent-001 \\
-  --tmux-target dev:0.1`}
-        </pre>
-
-        <h3>7. 常用命令</h3>
+        <h3>6. 常用命令</h3>
         <pre className="codeBlock">
 {`# 列出所有 agent
 agenttalk list

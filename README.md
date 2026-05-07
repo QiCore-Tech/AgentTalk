@@ -15,13 +15,60 @@ AgentTalk 是一个轻量级局域网 Agent 通信系统，面向运行在 tmux 
 
 ### 快速开始
 
-一键部署 Hub server：
+#### 1. 部署 Hub Server
 
 ```bash
 scripts/deploy-hub.sh
 ```
 
-启动本机 client relay：
+#### 2. 设置 Agent（推荐：使用便捷脚本）
+
+**检查环境：**
+```bash
+./scripts/check-env.sh
+```
+
+**一键设置 tmux + PTY（不启动 AI agent）：**
+```bash
+# 进入项目目录
+cd /path/to/project
+
+# 交互式设置（创建 tmux session，注册 pane，启动监控）
+./scripts/setup-pane.sh
+
+# 或指定参数
+./scripts/setup-pane.sh --session my-api --kind codex
+```
+
+**在 tmux 中启动您的 AI Agent：**
+```bash
+# 附加到刚创建的 session
+tmux attach -t my-api
+
+# 启动 Claude Code
+claude
+
+# 或启动其他 agent CLI
+codex
+```
+
+#### 3. 启动/管理监控
+
+```bash
+# 查看所有 agent 状态
+./scripts/start-all-agents.sh --status
+
+# 启动所有已注册 agent 的监控
+./scripts/start-all-agents.sh
+
+# 停止监控
+./scripts/start-all-agents.sh --stop
+
+# 实时监控日志
+./scripts/start-all-agents.sh --monitor
+```
+
+#### 传统方式（手动注册）
 
 ```bash
 scripts/start-client.sh \
@@ -32,12 +79,6 @@ scripts/start-client.sh \
   --owner alice \
   --kind codex \
   --workspace /workspace/service-api
-```
-
-只读发现本机 tmux panes：
-
-```bash
-scripts/start-client.sh --discover
 ```
 
 ### 常用入口
