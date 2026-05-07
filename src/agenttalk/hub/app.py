@@ -35,8 +35,7 @@ from agenttalk.tmux import TmuxClient
 from agenttalk.feishu.service import FeishuAgentTalkService
 from agenttalk.feishu.worker import FeishuEventHandler, FeishuLongConnectionWorker, LarkMessenger
 
-# Apply nest_asyncio to resolve event loop conflicts with lark-oapi
-nest_asyncio.apply()
+
 
 
 def create_app(settings: HubSettings) -> FastAPI:
@@ -541,5 +540,7 @@ def create_app(settings: HubSettings) -> FastAPI:
 
     if settings.web_dist_path and settings.web_dist_path.exists():
         app.mount("/", StaticFiles(directory=settings.web_dist_path, html=True), name="web")
+
+    return app
 
     return app

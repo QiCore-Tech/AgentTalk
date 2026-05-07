@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
+import { FitAddon } from 'xterm-addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import {
   type Agent,
@@ -25,7 +26,18 @@ function statusLabel(status: Agent['status']) {
 
 function App() {
   const [page, setPage] = useState<Page>('agents')
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    return (localStorage.getItem('theme') as 'light' | 'dark') || 'dark'
+  })
   const [agents, setAgents] = useState<Agent[]>([])
+
+  // Theme effect
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('theme', theme)
+  }, [theme])
+
+  const toggleTheme = () => setTheme(theme === 'light' ? 'dark' : 'light')
   const [selectedId, setSelectedId] = useState('')
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -143,18 +155,26 @@ function App() {
 
   return (
     <main className="shell">
-      <aside className="sidebar">
+      <button className="menuToggle" onClick={() => setMenuOpen(!menuOpen)} aria-label="Menu">
+        {menuOpen ? '✕' : '☰'}
+      </button>
+
+      {menuOpen && (
+        <div 
+          className="sidebarOverlay" 
+          onClick={() => setMenuOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside className={`sidebar ${menuOpen ? 'open' : ''}`}>
         <div className="brand">
           <span className="mark">AT</span>
           <div>
             <strong>AgentTalk</strong>
-            <span>LAN Agent Console</span>
           </div>
         </div>
-        <button className="menuToggle" onClick={() => setMenuOpen(!menuOpen)} aria-label="Menu">
-          {menuOpen ? '✕' : '☰'}
-        </button>
-        <nav className={menuOpen ? 'open' : ''}>
+        <nav>
           <button className={page === 'agents' ? 'active' : ''} onClick={() => { setPage('agents'); setMenuOpen(false) }}>
             Agents
           </button>
@@ -169,15 +189,19 @@ function App() {
             Detail
           </button>
           <button className={page === 'quickstart' ? 'active' : ''} onClick={() => { setPage('quickstart'); setMenuOpen(false) }}>
-            Quick Start
+            Guide
           </button>
           <button className={page === 'settings' ? 'active' : ''} onClick={() => { setPage('settings'); setMenuOpen(false) }}>
             Settings
           </button>
+
+          <button className="themeToggle secondary" onClick={toggleTheme}>
+            {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
+          </button>
         </nav>
         <div className="sidebarStats">
-          <span>{agents.length} registered</span>
-          <span>{agents.filter((agent) => agent.status !== 'offline').length} reachable</span>
+          <span>{agents.length} Registered</span>
+          <span>{agents.filter((a) => a.status !== 'offline').length} Online</span>
         </div>
       </aside>
 
@@ -1118,25 +1142,53 @@ function LiveTerminal({ agent }: { agent: Agent }) {
   useEffect(() => {
     if (!ref.current) return
     const terminal = new Terminal({
+      allowTransparency: true,
       cursorBlink: true,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontFamily: 'JetBrains Mono, Menlo, Monaco, Consolas, monospace',
       fontSize: 13,
-      theme: { background: '#0f172a', foreground: '#dbeafe' },
+      theme: {
+        background: 'transparent',
+        foreground: '#ffffff',
+        cursor: '#00ffcc',
+        selectionBackground: 'rgba(0, 255, 204, 0.3)',
+        black: '#1c2128',
+        red: '#f47067',
+        green: '#44cc88',
+        yellow: '#e3b341',
+        blue: '#58a6ff',
+        magenta: '#bc8cff',
+        cyan: '#39c5bb',
+        white: '#cdd9e5',
+        brightBlack: '#768390',
+        brightRed: '#f47067',
+        brightGreen: '#44cc88',
+        brightYellow: '#e3b341',
+        brightBlue: '#58a6ff',
+        brightMagenta: '#bc8cff',
+        brightCyan: '#39c5bb',
+        brightWhite: '#ffffff',
+      },
       scrollback: 1000,
-      rows: 24,
-      cols: 80,
     })
+    const fitAddon = new FitAddon()
+    terminal.loadAddon(fitAddon)
     terminal.open(ref.current)
+    fitAddon.fit()
     terminal.focus()
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const socket = new WebSocket(`${protocol}//${window.location.host}/ws/pty/${agent.short_id}`)
     socket.binaryType = 'arraybuffer'
 
+    const sendSize = () => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(`\x01${terminal.rows}:${terminal.cols}`)
+      }
+    }
+
     socket.addEventListener('open', () => {
       terminal.writeln('\x1b[32m[Connected to PTY]\x1b[0m')
-      // Send initial terminal size
-      socket.send(`\x01${terminal.rows}:${terminal.cols}`)
+      sendSize()
     })
 
     socket.addEventListener('message', (event) => {
@@ -1154,38 +1206,27 @@ function LiveTerminal({ agent }: { agent: Agent }) {
     })
 
     terminal.onData((data) => {
-      console.log('Terminal input:', JSON.stringify(data))
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(data)
-      } else {
-        console.warn('WebSocket not open, cannot send:', socket.readyState)
       }
     })
 
-    // Ensure terminal is focusable and focused
+    // Click to focus
     const terminalContainer = ref.current
     if (terminalContainer) {
-      terminalContainer.addEventListener('click', () => {
-        terminal.focus()
-        console.log('Terminal focused via click')
-      })
-      // Auto-focus after a short delay
-      setTimeout(() => {
-        terminal.focus()
-        console.log('Terminal auto-focused')
-      }, 500)
+      terminalContainer.addEventListener('click', () => terminal.focus())
+      setTimeout(() => terminal.focus(), 500)
     }
 
-    const handleResize = () => {
-      // Update terminal size on window resize
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(`\x01${terminal.rows}:${terminal.cols}`)
-      }
-    }
-    window.addEventListener('resize', handleResize)
+    // ResizeObserver for container size changes
+    const resizeObserver = new ResizeObserver(() => {
+      fitAddon.fit()
+      sendSize()
+    })
+    resizeObserver.observe(ref.current)
 
     return () => {
-      window.removeEventListener('resize', handleResize)
+      resizeObserver.disconnect()
       socket.close()
       terminal.dispose()
     }
