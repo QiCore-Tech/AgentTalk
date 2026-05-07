@@ -52,9 +52,21 @@ function App() {
     }
   }, [loadContext])
 
+  // Initial load
   useEffect(() => {
     void refreshAgents()
   }, [refreshAgents])
+
+  // Auto-refresh context every 5 seconds
+  useEffect(() => {
+    if (agents.length === 0) return
+    const interval = window.setInterval(() => {
+      agents.forEach((agent) => {
+        void loadContext(agent.short_id)
+      })
+    }, 5000)
+    return () => window.clearInterval(interval)
+  }, [agents, loadContext])
 
   const effectiveSelectedId = selectedId || agents[0]?.short_id || ''
   const selectedAgent = agents.find((agent) => agent.short_id === effectiveSelectedId)
@@ -90,6 +102,10 @@ function App() {
       // Also create a message record for tracking
       const created = await sendMessage(agent.short_id, body)
       setMessages((current) => [created, ...current].slice(0, 12))
+      // Refresh context after sending message
+      setTimeout(() => {
+        void loadContext(agent.short_id)
+      }, 1000)
       if (watch) {
         const timer = window.setInterval(async () => {
           const updated = await getMessage(created.message_id)

@@ -44,6 +44,22 @@ def create_app(settings: HubSettings) -> FastAPI:
     feishu_messenger: LarkMessenger | None = None
     feishu_service: FeishuAgentTalkService | None = None
 
+    async def capture_pty_outputs() -> None:
+        """Background task to capture PTY outputs periodically."""
+        while True:
+            try:
+                await asyncio.sleep(10)
+                for short_id in pty_manager.list_sessions():
+                    try:
+                        output = pty_manager.capture_output(short_id, max_lines=50)
+                        if output:
+                            from agenttalk.hub.models import AgentContextUpdateRequest
+                            store.update_agent_context(short_id, AgentContextUpdateRequest(context=output))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         nonlocal feishu_messenger, feishu_service
@@ -60,6 +76,8 @@ def create_app(settings: HubSettings) -> FastAPI:
             )
             worker.start_background()
             app.state.feishu_worker = worker
+        # Start PTY capture background task
+        asyncio.create_task(capture_pty_outputs())
         yield
 
     app = FastAPI(title="AgentTalk Hub", version="0.1.0", lifespan=lifespan)
@@ -184,7 +202,7 @@ def create_app(settings: HubSettings) -> FastAPI:
                 await websocket.close()
             except Exception:
                 pass
-            pty_manager.remove(short_id)
+            # Don't remove PTY session on disconnect - keep it alive for reconnection
 
     @app.post(
         "/api/relays/register",

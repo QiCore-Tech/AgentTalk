@@ -123,6 +123,31 @@ class PTYSession:
             data = data.encode("utf-8")
         self._write_queue.put_nowait(data)
 
+    def capture_output(self, max_lines: int = 100) -> str:
+        """Capture current terminal output."""
+        output_lines: list[str] = []
+        try:
+            # Read all available data
+            while True:
+                readable, _, _ = select.select([self.master_fd], [], [], 0.05)
+                if self.master_fd not in readable:
+                    break
+                try:
+                    data = os.read(self.master_fd, 4096)
+                    if data:
+                        output_lines.append(data.decode("utf-8", errors="replace"))
+                except OSError:
+                    break
+        except Exception:
+            pass
+
+        combined = "".join(output_lines)
+        lines = combined.split("\n")
+        # Remove ANSI escape sequences for storage
+        import re
+        clean = re.sub(r'\x1b\[[0-9;]*[mKHJ]', '', "\n".join(lines[-max_lines:]))
+        return clean
+
     def close(self) -> None:
         """Close the PTY session."""
         self._closed = True
@@ -165,6 +190,13 @@ class PTYManager:
             return False
         session.write(data)
         return True
+
+    def capture_output(self, short_id: str, max_lines: int = 100) -> str:
+        """Capture output from a session."""
+        session = self.get(short_id)
+        if session is None:
+            return ""
+        return session.capture_output(max_lines)
 
     def list_sessions(self) -> list[str]:
         """List all active session IDs."""
