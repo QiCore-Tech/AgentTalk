@@ -592,11 +592,48 @@ function QuickStart() {
         <h3>1. 前置要求</h3>
         <ul>
           <li>Python 3.12+</li>
-          <li>tmux（agent 必须运行在 tmux pane 中，用于保活）</li>
+          <li>tmux（agent 必须运行在 tmux pane 中，用于保活）— <strong>Windows 用户除外</strong></li>
           <li>Git（克隆代码仓库）</li>
         </ul>
 
-        <h3>2. 安装 AgentTalk</h3>
+        <h3>2. Windows 用户快速开始</h3>
+        <p>AgentTalk 支持 Windows 原生运行，无需 WSL 或 tmux。</p>
+
+        <h4>安装</h4>
+        <pre className="codeBlock">
+{`# 克隆仓库
+git clone https://git.qicore.tech/QiCore/soha_agentTalk.git
+cd soha_agentTalk
+
+# 安装依赖
+pip install -e ".[feishu,llm,windows]"
+
+# 配置 Hub 连接
+agenttalk setup ${hubUrl} --token ${token}`}
+        </pre>
+
+        <h4>注册 Agent（Windows）</h4>
+        <p>Windows 版不依赖 tmux，<code>--tmux-target</code> 只是一个<strong>标识符字符串</strong>（如 <code>main</code>、<code>api-project</code>），不需要对应真实的 tmux session。</p>
+        <pre className="codeBlock">
+{`# 方式 1：使用简单标识符
+agenttalk register --short-id my-claude --tmux-target "main" --owner "your-name" --kind claude
+
+# 方式 2：使用项目路径作为标识
+agenttalk register --short-id api-agent --tmux-target "project-api" --workspace "C:\\Users\\you\\projects\\api"
+
+# 启动 relay
+agenttalk daemon start`}
+        </pre>
+
+        <p><strong>注意事项：</strong></p>
+        <ul>
+          <li>先在终端窗口中启动您的 AI Agent（如 <code>claude</code>、<code>codex</code>）</li>
+          <li>保持终端窗口打开，relay 才能正常工作</li>
+          <li>每个 agent 的 <code>short-id</code> 必须全局唯一</li>
+          <li>支持 <code>auto_submit</code> 和 <code>paste_only</code> 两种接收模式</li>
+        </ul>
+
+        <h3>3. Linux/macOS 安装 AgentTalk</h3>
         <pre className="codeBlock">
 {`# 克隆仓库
 git clone https://git.qicore.tech/wenda.sheng/soha_agentTalk
@@ -611,7 +648,7 @@ pip install -e ".[feishu]"
 agenttalk setup ${hubUrl} --token ${token}`}
         </pre>
 
-        <h3>3. 快速设置（推荐）</h3>
+        <h3>4. Linux/macOS 快速设置（推荐）</h3>
         <p>使用便捷脚本一键创建 tmux session、注册 pane、启动监控。AI agent 由您自己启动。</p>
 
         <pre className="codeBlock">
@@ -647,7 +684,7 @@ codex`}
 ./scripts/start-all-agents.sh --monitor`}
         </pre>
 
-        <h3>5. 手动注册（高级）</h3>
+        <h3>5. Linux/macOS 手动注册（高级）</h3>
         <p>如果需要更精细的控制，可以手动注册：</p>
         <pre className="codeBlock">
 {`# 先创建 tmux session

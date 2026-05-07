@@ -60,7 +60,11 @@ agenttalk register --short-id my-agent --tmux-target mywindow:0.0
 agenttalk daemon start
 ```
 
-> **注意**：Windows 版不依赖 tmux，agent 直接在终端窗口中运行。保持终端窗口打开即可。
+> **Windows 注册说明**：
+> - Windows 版不依赖 tmux，`--tmux-target` 只是一个**标识符字符串**（如 `main`、`api-project`、`claude-window`），不需要对应真实的 tmux session
+> - 建议用有意义的名称，每个 agent 必须全局唯一
+> - Agent 直接在终端窗口中运行，保持窗口打开即可
+> - 支持 `auto_submit` 和 `paste_only` 两种接收模式
 
 #### Linux/macOS 用户
 
