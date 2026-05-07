@@ -702,6 +702,7 @@ function LiveTerminal({ agent }: { agent: Agent }) {
       cols: 80,
     })
     terminal.open(ref.current)
+    terminal.focus()
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const socket = new WebSocket(`${protocol}//${window.location.host}/ws/pty/${agent.short_id}`)
@@ -722,19 +723,39 @@ function LiveTerminal({ agent }: { agent: Agent }) {
       terminal.writeln('\x1b[31m[Disconnected]\x1b[0m')
     })
 
-    socket.addEventListener('error', () => {
+    socket.addEventListener('error', (err) => {
+      console.error('WebSocket error:', err)
       terminal.writeln('\x1b[31m[Connection error]\x1b[0m')
     })
 
     terminal.onData((data) => {
+      console.log('Terminal input:', JSON.stringify(data))
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(data)
+      } else {
+        console.warn('WebSocket not open, cannot send:', socket.readyState)
       }
     })
 
+    // Ensure terminal is focusable and focused
+    const terminalContainer = ref.current
+    if (terminalContainer) {
+      terminalContainer.addEventListener('click', () => {
+        terminal.focus()
+        console.log('Terminal focused via click')
+      })
+      // Auto-focus after a short delay
+      setTimeout(() => {
+        terminal.focus()
+        console.log('Terminal auto-focused')
+      }, 500)
+    }
+
     const handleResize = () => {
       // Update terminal size on window resize
-      socket.send(`\x01${terminal.rows}:${terminal.cols}`)
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(`\x01${terminal.rows}:${terminal.cols}`)
+      }
     }
     window.addEventListener('resize', handleResize)
 
@@ -745,7 +766,7 @@ function LiveTerminal({ agent }: { agent: Agent }) {
     }
   }, [agent.short_id])
 
-  return <div className="terminal" data-testid="live-terminal" ref={ref} />
+  return <div className="terminal" data-testid="live-terminal" ref={ref} tabIndex={0} role="textbox" aria-label="Terminal" />
 }
 
 export default App

@@ -12,21 +12,25 @@ from dataclasses import dataclass, field
 
 @dataclass
 class PTYSession:
-    """Manages a single PTY session for an agent."""
+    """Manages a single PTY session connected to an agent's tmux session."""
 
     master_fd: int
     slave_fd: int
     pid: int
     short_id: str
-    shell: str = "/bin/bash"
+    tmux_target: str
     _read_task: asyncio.Task | None = None
     _write_queue: asyncio.Queue[bytes] = field(default_factory=asyncio.Queue)
     _closed: bool = False
 
     @classmethod
-    def create(cls, short_id: str, shell: str = "/bin/bash") -> "PTYSession":
-        """Create a new PTY session."""
+    def create(cls, short_id: str, tmux_target: str) -> "PTYSession":
+        """Create a new PTY session connected to the agent's tmux session."""
         master_fd, slave_fd = pty.openpty()
+
+        # Extract session name from tmux target (e.g., "0:0.0" -> "0")
+        session_name = tmux_target.split(":")[0]
+        tmux_socket = "/tmp/tmux-0/default"
 
         pid = os.fork()
         if pid == 0:
@@ -40,10 +44,19 @@ class PTYSession:
             os.close(master_fd)
 
             # Set terminal size
-            # Use default 80x24
             struct.pack("HHHH", 24, 80, 0, 0)
 
-            os.execv(shell, [shell, "-l"])
+            # Set terminal type for tmux
+            os.environ["TERM"] = "xterm-256color"
+            
+            # Connect to the agent's tmux session
+            # Use new-session -t to create a mirror session (avoids nested warning)
+            mirror_session = f"pty-{short_id}"
+            os.execv("/usr/bin/tmux", [
+                "tmux", "-S", tmux_socket,
+                "new-session", "-A", "-s", mirror_session,
+                "-t", session_name
+            ])
             os._exit(1)
 
         # Parent process
@@ -58,7 +71,7 @@ class PTYSession:
             slave_fd=-1,  # Closed in parent
             pid=pid,
             short_id=short_id,
-            shell=shell,
+            tmux_target=tmux_target,
         )
 
     def set_size(self, rows: int, cols: int) -> None:
@@ -129,10 +142,10 @@ class PTYManager:
     def __init__(self):
         self._sessions: dict[str, PTYSession] = {}
 
-    def get_or_create(self, short_id: str) -> PTYSession:
+    def get_or_create(self, short_id: str, tmux_target: str) -> PTYSession:
         """Get existing session or create new one."""
         if short_id not in self._sessions:
-            self._sessions[short_id] = PTYSession.create(short_id)
+            self._sessions[short_id] = PTYSession.create(short_id, tmux_target)
         return self._sessions[short_id]
 
     def get(self, short_id: str) -> PTYSession | None:

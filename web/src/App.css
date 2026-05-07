@@ -435,6 +435,15 @@ textarea {
   border-radius: 7px;
   background: #0f172a;
   padding: 8px;
+  cursor: text;
+}
+
+.terminal .xterm {
+  height: 100%;
+}
+
+.terminal .xterm-viewport {
+  overflow-y: auto;
 }
 
 .contextList {

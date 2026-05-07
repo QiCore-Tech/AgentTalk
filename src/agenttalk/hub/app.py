@@ -148,7 +148,7 @@ def create_app(settings: HubSettings) -> FastAPI:
             await websocket.close(code=4004, reason=f"Agent not found: {short_id}")
             return
 
-        session = pty_manager.get_or_create(short_id)
+        session = pty_manager.get_or_create(short_id, agent.tmux_target)
 
         # Handle resize messages and data
         read_task = None
@@ -432,7 +432,7 @@ def create_app(settings: HubSettings) -> FastAPI:
         success = pty_manager.write_to_agent(short_id, text)
         if not success:
             # PTY not active, create one
-            session = pty_manager.get_or_create(short_id)
+            session = pty_manager.get_or_create(short_id, agent.tmux_target)
             session.write(text)
         
         return {"written": True, "short_id": short_id}
