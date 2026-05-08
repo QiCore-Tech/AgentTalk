@@ -161,6 +161,7 @@ def test_detect_errors_ignores_terminal_ui_failure_text() -> None:
 def test_detect_errors_ignores_diagnostic_command_text() -> None:
     output = """
 codex-worker             codex      coder        error      /workspace/app
+Are forbidden surfaces untouched?
 https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502
 │ -i 'error|failed|fatal|panic|traceback|500|502|503|504|connection|rate limit|quota|oom|killed'
 │ python -c 'from agenttalk.relay import detect_errors'

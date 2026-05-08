@@ -72,7 +72,7 @@ ERROR_PATTERNS = {
         re.IGNORECASE,
     ),
     "http_error": re.compile(
-        r"\b(httpstatuserror|http error|client error|server error|unauthorized|forbidden|"
+        r"\b(httpstatuserror|http error|client error|server error|"
         r"internal server error|bad gateway|gateway timeout|service unavailable)\b",
         re.IGNORECASE,
     ),
