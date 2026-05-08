@@ -135,6 +135,11 @@ fi
 # ============================================
 info "=== 4. Health Monitoring & Alerts ==="
 
+# Reset agent to idle first so error report triggers alert
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"short_id":"'$TEST_AGENT'","status":"idle","pane_alive":true,"process_alive":true,"detected_errors":[],"output_fingerprint":"reset123"}' \
+    "$LOCAL_URL/api/agents/$TEST_AGENT/health" > /dev/null 2>&1 || true
+
 # Report health
 if curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
     -d '{"short_id":"'$TEST_AGENT'","status":"error","pane_alive":true,"process_alive":true,"detected_errors":["test-error"],"output_fingerprint":"test123"}' \

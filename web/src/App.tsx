@@ -861,7 +861,7 @@ function AutoResumeEditor({ agent }: { agent: Agent }) {
       enabled: agent.auto_resume_enabled ?? true,
       message: agent.auto_resume_message ?? '继续',
     })
-  }, [agent])
+  }, [agent.short_id, agent.auto_resume_enabled, agent.auto_resume_message])
 
   async function handleToggle(enabled: boolean) {
     const newConfig = { ...config, enabled }
@@ -1173,7 +1173,17 @@ function LiveTerminal({ agent }: { agent: Agent }) {
     const fitAddon = new FitAddon()
     terminal.loadAddon(fitAddon)
     terminal.open(ref.current)
-    fitAddon.fit()
+    // Delay initial fit to avoid crash when container has zero dimensions
+    const safeFit = () => {
+      try {
+        if (ref.current && ref.current.offsetWidth > 0 && ref.current.offsetHeight > 0) {
+          fitAddon.fit()
+        }
+      } catch (e) {
+        // Silently ignore fit errors when terminal isn't ready
+      }
+    }
+    requestAnimationFrame(safeFit)
     terminal.focus()
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -1220,7 +1230,7 @@ function LiveTerminal({ agent }: { agent: Agent }) {
 
     // ResizeObserver for container size changes
     const resizeObserver = new ResizeObserver(() => {
-      fitAddon.fit()
+      safeFit()
       sendSize()
     })
     resizeObserver.observe(ref.current)
