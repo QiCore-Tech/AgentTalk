@@ -72,11 +72,14 @@ ERROR_PATTERNS = {
         re.IGNORECASE,
     ),
     "http_error": re.compile(
-        r"\b(401|403|429|500|502|503|504|unauthorized|forbidden|"
+        r"\b(httpstatuserror|http error|client error|server error|unauthorized|forbidden|"
         r"internal server error|bad gateway|gateway timeout|service unavailable)\b",
         re.IGNORECASE,
     ),
-    "process_error": re.compile(r"\b(out of memory|oom|keyboardinterrupt|killed)\b", re.IGNORECASE),
+    "process_error": re.compile(
+        r"^\s*(?:[-*•✗]\s*)?(?:killed|keyboardinterrupt)\b|\b(out of memory|oom|process killed)\b",
+        re.IGNORECASE,
+    ),
 }
 
 # Patterns indicating the agent is paused waiting for LLM/network
@@ -107,6 +110,8 @@ def detect_errors(output: str) -> list[str]:
     for line in output.splitlines()[-30:]:
         normalized = line.strip().lower()
         if not normalized:
+            continue
+        if normalized.startswith("│"):
             continue
         if any(pattern in normalized for pattern in BENIGN_ERROR_PATTERNS):
             continue

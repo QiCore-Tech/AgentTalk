@@ -158,14 +158,34 @@ def test_detect_errors_ignores_terminal_ui_failure_text() -> None:
     assert detect_errors(output) == []
 
 
+def test_detect_errors_ignores_diagnostic_command_text() -> None:
+    output = """
+codex-worker             codex      coder        error      /workspace/app
+https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502
+│ -i 'error|failed|fatal|panic|traceback|500|502|503|504|connection|rate limit|quota|oom|killed'
+│ python -c 'from agenttalk.relay import detect_errors'
+"""
+
+    assert detect_errors(output) == []
+
+
 def test_detect_errors_keeps_actionable_diagnostics() -> None:
     output = """
 Traceback (most recent call last):
 Error: connection refused
 npm ERR! command failed
+HTTPStatusError: Server error '502 Bad Gateway'
+Killed
 """
 
-    assert detect_errors(output) == ["command_error", "error", "network_error", "traceback"]
+    assert detect_errors(output) == [
+        "command_error",
+        "error",
+        "http_error",
+        "network_error",
+        "process_error",
+        "traceback",
+    ]
 
 
 def test_relay_sync_does_not_mark_agent_error_for_terminal_ui_failure_text() -> None:
