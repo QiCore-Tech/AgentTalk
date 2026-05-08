@@ -254,6 +254,7 @@ function App() {
           <AgentDetail
             agent={selectedAgent}
             messages={messages.filter((message) => message.target === selectedAgent.short_id)}
+            context={contexts[selectedAgent.short_id]}
             onSend={handleSend}
             onDelete={handleDeleteAgent}
           />
@@ -531,11 +532,13 @@ function AgentsHome(props: AgentsHomeProps) {
 function AgentDetail({
   agent,
   messages,
+  context,
   onSend,
   onDelete,
 }: {
   agent: Agent
   messages: Message[]
+  context?: AgentContext
   onSend: (agent: Agent, body: string, watch: boolean) => Promise<void>
   onDelete: (shortId: string) => void
 }) {
@@ -548,6 +551,10 @@ function AgentDetail({
         <button className="danger full" onClick={() => onDelete(agent.short_id)}>
           Delete Agent
         </button>
+        <div className="recentMessages">
+          <h2>Terminal Context</h2>
+          <ContextBlock context={context?.context || ''} tall />
+        </div>
         <RecentMessages messages={messages} />
       </section>
       <section className="panel terminalPanel">
