@@ -24,7 +24,7 @@ def auth() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
 
 
-def register_target(client: TestClient, *, status: str = "online") -> None:
+def register_target(client: TestClient, *, status: str = "idle") -> None:
     assert (
         client.post(
             "/api/relays/register",

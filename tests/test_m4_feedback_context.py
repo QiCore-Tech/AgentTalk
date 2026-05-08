@@ -34,7 +34,7 @@ def register_target(client: TestClient) -> None:
             "workspace": "/workspace/api",
             "tmux_target": "dev:0.1",
             "receive_mode": "auto_submit",
-            "status": "online",
+            "status": "idle",
         },
     )
 

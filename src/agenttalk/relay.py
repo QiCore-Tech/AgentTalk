@@ -318,8 +318,9 @@ class AgentTalkRelay:
             delta = output_delta(state.baseline, output)
             if not delta:
                 continue
-            done = state.done_marker in delta
-            response_text = delta.replace(state.done_marker, "").rstrip()
+            response_delta = strip_injected_message_echo(delta, state.done_marker)
+            done = state.done_marker in response_delta
+            response_text = response_delta.replace(state.done_marker, "").rstrip()
             self.hub_client.update_message_response(message_id, response_text, completed=done)
             if done:
                 completed.append(message_id)
@@ -382,3 +383,20 @@ def output_delta(baseline: str, current: str) -> str:
         if baseline_lines[-size:] == current_lines[:size]:
             return "\n".join(current_lines[size:])
     return current
+
+
+def strip_injected_message_echo(delta: str, done_marker: str) -> str:
+    """Remove the terminal echo of the injected AgentTalk prompt.
+
+    tmux-hosted CLIs often echo pasted/submitted input into the pane. The injected
+    task includes the done marker as an instruction, so the watcher must ignore
+    the first marker when it belongs to the echoed prompt and only complete after
+    the peer prints the marker in its own response.
+    """
+    prompt_start = delta.find("[AgentTalk Message]")
+    if prompt_start < 0:
+        return delta
+    marker_index = delta.find(done_marker, prompt_start)
+    if marker_index < 0:
+        return delta
+    return delta[marker_index + len(done_marker) :].lstrip()

@@ -44,7 +44,7 @@ def upsert_agent(client: TestClient, short_id: str, machine_id: str = "machine-a
             "workspace": "/workspace/project",
             "tmux_target": "dev:0.1",
             "receive_mode": "auto_submit",
-            "status": "online",
+            "status": "idle",
         },
     )
     assert response.status_code == 200
@@ -84,7 +84,7 @@ def test_register_relay_and_two_agents(tmp_path: Path) -> None:
     assert response.status_code == 200
     agents = response.json()["agents"]
     assert [agent["short_id"] for agent in agents] == ["alice-claude-ui", "alice-codex-api"]
-    assert all(agent["status"] == "online" for agent in agents)
+    assert all(agent["status"] == "idle" for agent in agents)
 
 
 def test_get_agent_detail(tmp_path: Path) -> None:
@@ -121,7 +121,7 @@ def test_unknown_relay_cannot_own_agent(tmp_path: Path) -> None:
             "workspace": "/workspace/project",
             "tmux_target": "dev:0.1",
             "receive_mode": "auto_submit",
-            "status": "online",
+            "status": "idle",
         },
     )
 

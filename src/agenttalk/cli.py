@@ -274,7 +274,7 @@ def send_message(
     typer.echo(f"done marker: {payload['done_marker']}")
     if watch:
         watch_message(
-            payload["message_id"],
+            message_id=payload["message_id"],
             resolved_hub_url=resolved_hub_url,
             resolved_token=resolved_token,
             timeout=timeout,

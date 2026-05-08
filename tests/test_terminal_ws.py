@@ -44,7 +44,7 @@ def register_target(client: TestClient) -> None:
             "workspace": "/workspace/api",
             "tmux_target": "agenttalk-e2e-api:0.0",
             "receive_mode": "auto_submit",
-            "status": "online",
+            "status": "idle",
         },
     )
 

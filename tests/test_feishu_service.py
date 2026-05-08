@@ -48,6 +48,13 @@ def test_agents_command_returns_card(tmp_path: Path) -> None:
     assert "alice-codex-api" in str(reply.content)
 
 
+def test_agents_online_command_returns_non_offline_agents(tmp_path: Path) -> None:
+    reply = handle(tmp_path, "/agents online")
+
+    assert reply.msg_type == "interactive"
+    assert "alice-codex-api" in str(reply.content)
+
+
 def test_context_command_returns_recent_context(tmp_path: Path) -> None:
     reply = handle(tmp_path, "/context alice-codex-api")
 

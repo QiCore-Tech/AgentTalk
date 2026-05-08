@@ -34,8 +34,10 @@ class FeishuAgentTalkService:
             case FeishuCommandKind.HELP:
                 return help_reply()
             case FeishuCommandKind.AGENTS:
-                status = AgentStatus.ONLINE if command.args and command.args[0].lower() == "online" else None
-                return agents_card(self.store.list_agents(AgentFilters(status=status)), web_base_url=self.web_base_url)
+                agents = self.store.list_agents(AgentFilters())
+                if command.args and command.args[0].lower() == "online":
+                    agents = [agent for agent in agents if agent.status != AgentStatus.OFFLINE]
+                return agents_card(agents, web_base_url=self.web_base_url)
             case FeishuCommandKind.AGENT:
                 agent_id = command.args[0]
                 agent = self.store.get_agent(agent_id)

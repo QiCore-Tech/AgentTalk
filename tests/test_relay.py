@@ -4,7 +4,13 @@ from dataclasses import dataclass, field
 
 from agenttalk.config import AgentBinding, AgentTalkConfig
 from agenttalk.hub.models import AgentStatus, MessageStatus, ReceiveMode
-from agenttalk.relay import AgentTalkRelay, StaticTmuxClient, WatchState, build_injected_message
+from agenttalk.relay import (
+    AgentTalkRelay,
+    StaticTmuxClient,
+    WatchState,
+    build_injected_message,
+    strip_injected_message_echo,
+)
 from agenttalk.tmux import TmuxPane
 
 
@@ -220,6 +226,83 @@ def test_relay_watch_detects_done_marker() -> None:
     assert updates == 1
     assert fake_hub.response_updates == [("msg-1", "answer", True)]
     assert "msg-1" not in relay.watch_states
+
+
+def test_relay_watch_ignores_echoed_injected_done_marker() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient([])
+    injected = build_injected_message(
+        message_id="msg-1",
+        sender="bob",
+        target="alice-codex-api",
+        body="Please reply.",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+    tmux.captures["dev:0.1"] = f"before\n{injected}\n"
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
+    relay.watch_states["msg-1"] = WatchState(
+        target="dev:0.1",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+
+    updates = relay.update_watches_once()
+
+    assert updates == 1
+    assert fake_hub.response_updates == [("msg-1", "", False)]
+    assert fake_hub.status_updates == [("msg-1", MessageStatus.WORKING, "")]
+    assert "msg-1" in relay.watch_states
+
+
+def test_relay_watch_completes_after_echoed_prompt_and_agent_marker() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient([])
+    injected = build_injected_message(
+        message_id="msg-1",
+        sender="bob",
+        target="alice-codex-api",
+        body="Please reply.",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+    tmux.captures["dev:0.1"] = (
+        f"before\n{injected}\nACK agenttalk reachable\n<<<AGENTTALK_DONE:msg-1>>>\n"
+    )
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
+    relay.watch_states["msg-1"] = WatchState(
+        target="dev:0.1",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+
+    updates = relay.update_watches_once()
+
+    assert updates == 1
+    assert fake_hub.response_updates == [("msg-1", "ACK agenttalk reachable", True)]
+    assert "msg-1" not in relay.watch_states
+
+
+def test_strip_injected_message_echo_leaves_normal_response_delta() -> None:
+    delta = "answer\n<<<AGENTTALK_DONE:msg-1>>>\n"
+
+    stripped = strip_injected_message_echo(delta, "<<<AGENTTALK_DONE:msg-1>>>")
+
+    assert stripped == delta
 
 
 def test_relay_sync_context_once() -> None:
