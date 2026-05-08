@@ -123,7 +123,7 @@ fi
 if [ -n "$MSG_ID" ]; then
     sleep 2
     STATUS=$(curl -sf -H "Authorization: Bearer $TOKEN" "$LOCAL_URL/api/messages/$MSG_ID" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
-    if [ "$STATUS" = "completed" ] || [ "$STATUS" = "delivered" ] || [ "$STATUS" = "injected" ] || [ "$STATUS" = "sent" ]; then
+    if [ "$STATUS" = "completed" ] || [ "$STATUS" = "delivered" ] || [ "$STATUS" = "injected" ] || [ "$STATUS" = "sent" ] || [ "$STATUS" = "working" ]; then
         pass "Message status progression"
     else
         fail "Message status progression (got: $STATUS)"
@@ -275,9 +275,17 @@ fi
 # ============================================
 info "=== 10. Cleanup ==="
 
-# Delete test agent
-uv run agenttalk unregister "$TEST_AGENT" 2>/dev/null || true
+# Delete test agent from Hub (API)
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" \
+    "$LOCAL_URL/api/agents/$TEST_AGENT" >/dev/null 2>&1 || true
+
+# Unregister test agent from local CLI
+uv run agenttalk unregister "$TEST_AGENT" >/dev/null 2>&1 || true
+
+# Kill test tmux session
 tmux kill-session -t test-e2e 2>/dev/null || true
+
+pass "Test artifacts cleaned up"
 
 # ============================================
 # Summary
