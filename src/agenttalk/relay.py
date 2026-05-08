@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from agenttalk.process_manager import (
 # Backward compat
 TmuxClient = TmuxProcessManager
 TmuxPane = ManagedProcess
+logger = logging.getLogger(__name__)
 
 # Optional LLM-based status analysis
 try:
@@ -258,18 +260,34 @@ class AgentTalkRelay:
             status=status,
         )
 
-    def run_forever(self, *, interval_seconds: float = 5.0) -> None:
+    def run_once(self, *, context_counter: int = 0) -> int:
+        self.sync_once()
+        self.process_next_message_once()
+        self.update_watches_once()
+        # Sync context every 6 intervals (~30s at the default interval).
+        context_counter += 1
+        if context_counter >= 6:
+            self.sync_context_once()
+            context_counter = 0
+        self.hub_client.heartbeat(self.config.machine_id)
+        return context_counter
+
+    def run_forever(
+        self,
+        *,
+        interval_seconds: float = 5.0,
+        max_iterations: int | None = None,
+    ) -> None:
         context_counter = 0
-        while True:
-            self.sync_once()
-            self.process_next_message_once()
-            self.update_watches_once()
-            # Sync context every 6 intervals (~30s)
-            context_counter += 1
-            if context_counter >= 6:
-                self.sync_context_once()
-                context_counter = 0
-            self.hub_client.heartbeat(self.config.machine_id)
+        iterations = 0
+        while max_iterations is None or iterations < max_iterations:
+            try:
+                context_counter = self.run_once(context_counter=context_counter)
+            except Exception:
+                logger.exception("AgentTalk relay loop failed; retrying")
+            iterations += 1
+            if max_iterations is not None and iterations >= max_iterations:
+                break
             time.sleep(interval_seconds)
 
     def process_next_message_once(self) -> bool:

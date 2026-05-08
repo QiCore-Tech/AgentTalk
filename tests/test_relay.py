@@ -23,6 +23,7 @@ class FakeHubClient:
     status_updates: list[tuple[str, MessageStatus, str]] = field(default_factory=list)
     response_updates: list[tuple[str, str, bool]] = field(default_factory=list)
     context_updates: list[tuple[str, str]] = field(default_factory=list)
+    heartbeats: list[str] = field(default_factory=list)
 
     def register_relay(self, _config: AgentTalkConfig) -> None:
         self.registered = True
@@ -48,7 +49,21 @@ class FakeHubClient:
         pass
 
     def heartbeat(self, machine_id: str) -> None:
-        pass
+        self.heartbeats.append(machine_id)
+
+
+class FlakyRegisterHubClient(FakeHubClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+        self.failures_remaining = 1
+
+    def register_relay(self, _config: AgentTalkConfig) -> None:
+        self.attempts += 1
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise RuntimeError("hub temporarily unavailable")
+        self.registered = True
 
 
 class RecordingTmuxClient(StaticTmuxClient):
@@ -111,6 +126,25 @@ def test_relay_sync_marks_missing_pane_offline() -> None:
     assert result.upserted == 2
     assert result.online == 1
     assert result.offline == 1
+
+
+def test_relay_run_forever_retries_after_transient_hub_failure() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FlakyRegisterHubClient()
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=StaticTmuxClient([]))
+
+    relay.run_forever(interval_seconds=0, max_iterations=2)
+
+    assert fake_hub.attempts == 2
+    assert fake_hub.registered is True
+    assert fake_hub.heartbeats == ["machine-a"]
 
 
 def test_detect_errors_ignores_terminal_ui_failure_text() -> None:
