@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from dataclasses import dataclass
 
@@ -11,9 +12,7 @@ from agenttalk.process_manager import (
     ManagedProcess,
     ProcessManager,
     TmuxProcessManager,
-    get_process_manager,
     is_process_alive,
-    output_fingerprint,
 )
 
 # Backward compat
@@ -50,38 +49,33 @@ class AgentHealthState:
     consecutive_errors: int = 0
 
 
-ERROR_PATTERNS = [
-    "error", "error:", "error-",
-    "traceback", "traceback:",
-    "failed", "failed:", "fail:",
-    "timeout", "timeout:",
-    "connection refused", "connection error",
-    "rate limit", "rate-limit", "too many requests", "429",
-    "unauthorized", "401", "403", "forbidden",
-    "quota exceeded", "quota limit",
-    "econnrefused", "enotfound", "etimedout",
-    "panic:", "fatal:", "fatal error",
-    "out of memory", "oom", "killed",
-    "interrupted", "keyboardinterrupt",
-    "npm err", "pip err", "cargo err",
-    "api error", "apierror",
-    "anthropic error", "openai error", "google api error", "gemini error",
-    "i'm sorry, but i encountered an error",
-    "i apologize, but",
-    "something went wrong",
-    "service unavailable", "503",
-    "bad gateway", "502",
-    "gateway timeout", "504",
-    "internal server error", "500",
-    "invalid request", "bad request", "400",
-    "not found", "404",
-    "max retries exceeded",
-    "unable to connect",
-    "network is unreachable",
-    "dns error",
-    "ssl error", "tls error",
-    "certificate error",
+BENIGN_ERROR_PATTERNS = [
+    "auto-update failed",
+    "run /review",
 ]
+
+ERROR_PATTERNS = {
+    "traceback": re.compile(r"\btraceback \(most recent call last\)|\btraceback:", re.IGNORECASE),
+    "error": re.compile(r"^\s*(?:[-*•✗]\s*)?(?:error|api error|provider error|llm error)\b[:\s-]", re.IGNORECASE),
+    "failed": re.compile(r"^\s*(?:[-*•✗]\s*)?(?:failed|fatal|panic)\b[:\s-]", re.IGNORECASE),
+    "command_error": re.compile(r"^\s*(?:npm|pip|cargo)\s+err\b", re.IGNORECASE),
+    "network_error": re.compile(
+        r"\b(connection refused|connection error|econnrefused|enotfound|etimedout|"
+        r"unable to connect|network is unreachable|dns error|ssl error|tls error|certificate error)\b",
+        re.IGNORECASE,
+    ),
+    "provider_error": re.compile(
+        r"\b(rate limit|rate-limit|too many requests|quota exceeded|quota limit|"
+        r"anthropic error|openai error|google api error|gemini error|max retries exceeded)\b",
+        re.IGNORECASE,
+    ),
+    "http_error": re.compile(
+        r"\b(401|403|429|500|502|503|504|unauthorized|forbidden|"
+        r"internal server error|bad gateway|gateway timeout|service unavailable)\b",
+        re.IGNORECASE,
+    ),
+    "process_error": re.compile(r"\b(out of memory|oom|keyboardinterrupt|killed)\b", re.IGNORECASE),
+}
 
 # Patterns indicating the agent is paused waiting for LLM/network
 PAUSE_PATTERNS = [
@@ -107,12 +101,17 @@ PAUSE_PATTERNS = [
 
 
 def detect_errors(output: str) -> list[str]:
-    output_lower = output.lower()
-    found: list[str] = []
-    for pattern in ERROR_PATTERNS:
-        if pattern in output_lower:
-            found.append(pattern)
-    return list(set(found))
+    found: set[str] = set()
+    for line in output.splitlines()[-30:]:
+        normalized = line.strip().lower()
+        if not normalized:
+            continue
+        if any(pattern in normalized for pattern in BENIGN_ERROR_PATTERNS):
+            continue
+        for name, pattern in ERROR_PATTERNS.items():
+            if pattern.search(line):
+                found.add(name)
+    return sorted(found)
 
 
 def detect_pause(output: str) -> list[str]:

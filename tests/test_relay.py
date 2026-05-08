@@ -9,6 +9,7 @@ from agenttalk.relay import (
     StaticTmuxClient,
     WatchState,
     build_injected_message,
+    detect_errors,
     strip_injected_message_echo,
 )
 from agenttalk.tmux import TmuxPane
@@ -110,6 +111,66 @@ def test_relay_sync_marks_missing_pane_offline() -> None:
     assert result.upserted == 2
     assert result.online == 1
     assert result.offline == 1
+
+
+def test_detect_errors_ignores_terminal_ui_failure_text() -> None:
+    output = """
+● ACK agenttalk watch fixed
+<<<AGENTTALK_DONE:msg-1>>>
+✗ Auto-update failed · Try claude doctor or npm i -g @anthropic-ai/claude-code
+› Run /review on my current changes
+"""
+
+    assert detect_errors(output) == []
+
+
+def test_detect_errors_keeps_actionable_diagnostics() -> None:
+    output = """
+Traceback (most recent call last):
+Error: connection refused
+npm ERR! command failed
+"""
+
+    assert detect_errors(output) == ["command_error", "error", "network_error", "traceback"]
+
+
+def test_relay_sync_does_not_mark_agent_error_for_terminal_ui_failure_text() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+            )
+        ],
+    )
+    fake_hub = FakeHubClient()
+    tmux = StaticTmuxClient(
+        [
+            TmuxPane(
+                target="dev:0.1",
+                pane_id="%1",
+                command="codex",
+                current_path="/workspace/api",
+                title="codex",
+                kind="codex",
+                pane_pid=None,
+            )
+        ]
+    )
+    tmux.captures["dev:0.1"] = "✗ Auto-update failed · Try claude doctor\n› Run /review on my current changes\n"
+
+    AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).sync_once()
+
+    assert fake_hub.upserts == [("alice-codex-api", AgentStatus.IDLE)]
 
 
 def test_build_injected_message_contains_marker() -> None:
