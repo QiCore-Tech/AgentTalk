@@ -12,6 +12,7 @@ from agenttalk.relay import (
     detect_errors,
     prepare_injected_message,
     strip_injected_message_echo,
+    tail_shows_live_agent_ui,
 )
 from agenttalk.tmux import TmuxPane
 
@@ -261,6 +262,54 @@ def test_relay_sync_does_not_mark_agent_error_for_terminal_ui_failure_text() -> 
 
     AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).sync_once()
 
+    assert fake_hub.upserts == [("alice-codex-api", AgentStatus.IDLE)]
+
+
+def test_relay_sync_does_not_mark_live_agent_error_for_scrollback_diagnostics() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+            )
+        ],
+    )
+    fake_hub = FakeHubClient()
+    tmux = StaticTmuxClient(
+        [
+            TmuxPane(
+                target="dev:0.1",
+                pane_id="%1",
+                command="codex",
+                current_path="/workspace/api",
+                title="codex",
+                kind="codex",
+                pane_pid=None,
+            )
+        ]
+    )
+    tmux.captures["dev:0.1"] = "\n".join(
+        [
+            "error: aborted during AgentTalk repair",
+            "Traceback: diagnostic text from a command output",
+            "› Implement {feature}",
+            "  gpt-5.5 xhigh · /workspace/api",
+        ]
+    )
+
+    AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).sync_once()
+
+    assert detect_errors(tmux.captures["dev:0.1"])
+    assert tail_shows_live_agent_ui(tmux.captures["dev:0.1"])
     assert fake_hub.upserts == [("alice-codex-api", AgentStatus.IDLE)]
 
 

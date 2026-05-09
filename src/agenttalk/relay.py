@@ -135,6 +135,23 @@ def detect_pause(output: str) -> list[str]:
     return list(set(found))
 
 
+def tail_shows_live_agent_ui(output: str) -> bool:
+    tail_lines = [line.strip() for line in output.splitlines()[-12:] if line.strip()]
+    if not tail_lines:
+        return False
+    tail = "\n".join(tail_lines)
+    live_markers = (
+        "› ",
+        "❯",
+        "gpt-",
+        "bypass permissions",
+        "esc to interrupt",
+        "Working (",
+        "evidence-based-code-review",
+    )
+    return any(marker in tail for marker in live_markers)
+
+
 def output_fingerprint(output: str) -> str:
     return hashlib.sha256(output.encode()).hexdigest()[:16]
 
@@ -210,7 +227,7 @@ class AgentTalkRelay:
             status = AgentStatus.CRASHED
         elif not process_alive:
             status = AgentStatus.CRASHED
-        elif detected_errors:
+        elif detected_errors and not tail_shows_live_agent_ui(recent_output):
             status = AgentStatus.ERROR
             state.consecutive_errors += 1
         elif state.last_output_fingerprint and current_fingerprint != state.last_output_fingerprint:
