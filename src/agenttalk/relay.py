@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from agenttalk.config import AgentTalkConfig
 from agenttalk.hub.client import HubClient
@@ -20,6 +21,9 @@ from agenttalk.process_manager import (
 TmuxClient = TmuxProcessManager
 TmuxPane = ManagedProcess
 logger = logging.getLogger(__name__)
+
+INLINE_INJECTION_MAX_CHARS = 1400
+INLINE_INJECTION_MAX_LINES = 8
 
 # Optional LLM-based status analysis
 try:
@@ -326,7 +330,7 @@ class AgentTalkRelay:
                 "Target binding not found on relay",
             )
             return True
-        payload = build_injected_message(
+        payload = prepare_injected_message(
             message_id=message["message_id"],
             sender=message["sender"],
             target=message["target"],
@@ -407,6 +411,78 @@ class StaticTmuxClient(TmuxProcessManager):
 
     def capture_output(self, target: str, *, lines: int = 300) -> str:
         return self.captures.get(target, "")
+
+
+def default_message_spool_dir() -> Path:
+    return Path.home() / ".agenttalk" / "inbox"
+
+
+def _safe_spool_filename(message_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", message_id).strip("._")
+    return f"{safe or 'message'}.md"
+
+
+def _collapse_for_inline(text: str, *, limit: int = 900) -> str:
+    collapsed = " ".join(text.strip().split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3].rstrip() + "..."
+
+
+def _should_spool_message(body: str) -> bool:
+    return (
+        len(body) > INLINE_INJECTION_MAX_CHARS
+        or len(body.splitlines()) > INLINE_INJECTION_MAX_LINES
+    )
+
+
+def prepare_injected_message(
+    *,
+    message_id: str,
+    sender: str,
+    target: str,
+    body: str,
+    done_marker: str,
+    spool_dir: Path | None = None,
+) -> str:
+    """Build the tmux payload.
+
+    Long, highly multiline prompts are fragile in Codex/Claude TUIs: the paste
+    can remain in the editor and submit keys may turn into extra blank lines.
+    Keep the terminal injection compact and spill the full task to a local file
+    when needed. The Hub still stores the full message body.
+    """
+
+    if not _should_spool_message(body):
+        task = _collapse_for_inline(body)
+        return (
+            f"[AgentTalk Message] message_id: {message_id} from: {sender} to: {target}. "
+            f"Task: {task} "
+            "When done, print this exact marker on its own line: "
+            f"{done_marker}"
+        )
+
+    resolved_spool_dir = spool_dir or default_message_spool_dir()
+    resolved_spool_dir.mkdir(parents=True, exist_ok=True)
+    spool_path = resolved_spool_dir / _safe_spool_filename(message_id)
+    full_message = build_injected_message(
+        message_id=message_id,
+        sender=sender,
+        target=target,
+        body=body,
+        done_marker=done_marker,
+    )
+    spool_path.write_text(full_message, encoding="utf-8")
+    digest = hashlib.sha256(full_message.encode("utf-8")).hexdigest()[:16]
+    preview = _collapse_for_inline(body, limit=240)
+    return (
+        f"[AgentTalk Message] message_id: {message_id} from: {sender} to: {target}. "
+        f"Full task is stored at {spool_path} (sha256:{digest}). "
+        "Read that file first, then perform the task. "
+        f"Preview: {preview} "
+        "When done, print this exact marker on its own line: "
+        f"{done_marker}"
+    )
 
 
 def build_injected_message(*, message_id: str, sender: str, target: str, body: str, done_marker: str) -> str:

@@ -60,9 +60,8 @@ def test_inject_text_uses_tmux_buffer_and_deletes_it(monkeypatch) -> None:
     )
 
 
-def test_inject_text_auto_submit_retries_equivalent_submit_keys(monkeypatch) -> None:
+def test_inject_text_auto_submit_uses_single_enter(monkeypatch) -> None:
     calls: list[list[str]] = []
-    submitted = iter([False, False, True])
 
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
@@ -72,7 +71,7 @@ def test_inject_text_auto_submit_retries_equivalent_submit_keys(monkeypatch) -> 
     monkeypatch.setattr(
         TmuxProcessManager,
         "_wait_for_active_submission",
-        lambda self, target: next(submitted),
+        lambda self, target: False,
     )
 
     TmuxProcessManager().inject_text("dev:0.1", "large\nmessage", submit=True)
@@ -80,11 +79,7 @@ def test_inject_text_auto_submit_retries_equivalent_submit_keys(monkeypatch) -> 
     submit_calls = [
         call for call in calls if call[:4] == ["tmux", "send-keys", "-t", "dev:0.1"]
     ]
-    assert submit_calls == [
-        ["tmux", "send-keys", "-t", "dev:0.1", "Enter"],
-        ["tmux", "send-keys", "-t", "dev:0.1", "C-m"],
-        ["tmux", "send-keys", "-t", "dev:0.1", "C-j"],
-    ]
+    assert submit_calls == [["tmux", "send-keys", "-t", "dev:0.1", "Enter"]]
 
 
 def test_active_submission_detection_rejects_idle_completed_spinner() -> None:

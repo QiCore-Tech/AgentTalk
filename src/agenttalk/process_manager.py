@@ -137,28 +137,27 @@ class TmuxProcessManager(ProcessManager):
                 check=False,
             )
         if submit:
-            self._submit_with_fallback(target)
+            self._submit_once(target)
 
-    def _submit_with_fallback(self, target: str) -> None:
-        """Submit pasted input and retry with equivalent submit keys if idle.
+    def _submit_once(self, target: str) -> None:
+        """Submit pasted input once.
 
-        Claude/Codex-style TUIs sometimes leave large multiline pastes in the
-        editor after a single Enter. Enter, C-m, and C-j are accepted by
-        different terminal input stacks, so try them in order and stop early
-        when the pane shows active agent work.
+        Retrying with multiple equivalent submit keys is unsafe for Codex-style
+        editors: when a paste was not accepted as a complete prompt, the extra
+        keys become blank input lines and make the prompt harder to recover.
+        Long AgentTalk messages are compacted/spooled before they reach tmux, so
+        a single Enter is the least surprising submit action.
         """
 
-        for key in ("Enter", "C-m", "C-j"):
-            submit = subprocess.run(
-                ["tmux", "send-keys", "-t", target, key],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            if submit.returncode != 0:
-                raise RuntimeError(submit.stderr.strip() or "tmux submit failed")
-            if self._wait_for_active_submission(target):
-                return
+        submit = subprocess.run(
+            ["tmux", "send-keys", "-t", target, "Enter"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if submit.returncode != 0:
+            raise RuntimeError(submit.stderr.strip() or "tmux submit failed")
+        self._wait_for_active_submission(target)
 
     def _wait_for_active_submission(self, target: str, *, timeout: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout

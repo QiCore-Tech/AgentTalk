@@ -10,6 +10,7 @@ from agenttalk.relay import (
     WatchState,
     build_injected_message,
     detect_errors,
+    prepare_injected_message,
     strip_injected_message_echo,
 )
 from agenttalk.tmux import TmuxPane
@@ -280,6 +281,46 @@ def test_build_injected_message_contains_marker() -> None:
     assert "<<<AGENTTALK_DONE:msg-1>>>" in payload
 
 
+def test_prepare_injected_message_keeps_short_message_inline(tmp_path) -> None:
+    payload = prepare_injected_message(
+        message_id="msg-1",
+        sender="alice",
+        target="bob",
+        body="Please review.\nFocus on errors.",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+        spool_dir=tmp_path,
+    )
+
+    assert "\n" not in payload
+    assert "Please review. Focus on errors." in payload
+    assert "Full task is stored" not in payload
+    assert "<<<AGENTTALK_DONE:msg-1>>>" in payload
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_prepare_injected_message_spools_long_multiline_message(tmp_path) -> None:
+    body = "\n".join(f"line {index}: please review this detail" for index in range(40))
+
+    payload = prepare_injected_message(
+        message_id="msg-long/1",
+        sender="alice",
+        target="bob",
+        body=body,
+        done_marker="<<<AGENTTALK_DONE:msg-long-1>>>",
+        spool_dir=tmp_path,
+    )
+
+    spool_files = list(tmp_path.iterdir())
+    assert len(spool_files) == 1
+    spooled = spool_files[0].read_text(encoding="utf-8")
+    assert body in spooled
+    assert "<<<AGENTTALK_DONE:msg-long-1>>>" in spooled
+    assert "\n" not in payload
+    assert "Full task is stored at" in payload
+    assert body not in payload
+    assert str(spool_files[0]) in payload
+
+
 def test_relay_process_next_message_injects_auto_submit() -> None:
     config = AgentTalkConfig(
         hub_url="http://hub.local:8787",
@@ -316,6 +357,53 @@ def test_relay_process_next_message_injects_auto_submit() -> None:
     assert tmux.injections[0][0] == "dev:0.1"
     assert tmux.injections[0][2] is True
     assert fake_hub.status_updates == [("msg-1", MessageStatus.INJECTED, "")]
+
+
+def test_relay_process_next_message_spools_long_body(monkeypatch, tmp_path) -> None:
+    import agenttalk.relay as relay_module
+
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+                receive_mode=ReceiveMode.AUTO_SUBMIT,
+            )
+        ],
+    )
+    body = "\n".join(f"review item {index}" for index in range(60))
+    fake_hub = FakeHubClient(
+        next_payload={
+            "message_id": "msg-long",
+            "sender": "bob",
+            "target": "alice-codex-api",
+            "body": body,
+            "done_marker": "<<<AGENTTALK_DONE:msg-long>>>",
+        }
+    )
+    tmux = RecordingTmuxClient([])
+    monkeypatch.setattr(relay_module, "default_message_spool_dir", lambda: tmp_path)
+
+    processed = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).process_next_message_once()
+
+    assert processed is True
+    injected = tmux.injections[0][1]
+    assert tmux.injections[0][2] is True
+    assert body not in injected
+    assert "\n" not in injected
+    spool_files = list(tmp_path.iterdir())
+    assert len(spool_files) == 1
+    assert body in spool_files[0].read_text(encoding="utf-8")
+    assert fake_hub.status_updates == [("msg-long", MessageStatus.INJECTED, "")]
 
 
 def test_relay_process_next_message_respects_paste_only() -> None:

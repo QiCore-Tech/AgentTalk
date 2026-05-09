@@ -122,8 +122,9 @@ Include exact file paths, commands, or contract names when relevant. Keep the re
 If an AgentTalk message appears in this terminal:
 
 1. Treat it as a direct task from the sender.
-2. Answer in the same terminal.
-3. When done, print the exact completion marker included in the message on its own line.
+2. If the prompt says the full task is stored in a local file, read that file before answering.
+3. Answer in the same terminal.
+4. When done, print the exact completion marker included in the message on its own line.
 
 Do not invent a marker. Use the marker from the received message exactly.
 
