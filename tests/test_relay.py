@@ -26,6 +26,7 @@ class FakeHubClient:
     response_updates: list[tuple[str, str, bool]] = field(default_factory=list)
     context_updates: list[tuple[str, str]] = field(default_factory=list)
     heartbeats: list[str] = field(default_factory=list)
+    messages: dict[str, dict] = field(default_factory=dict)
 
     def register_relay(self, _config: AgentTalkConfig) -> None:
         self.registered = True
@@ -43,6 +44,13 @@ class FakeHubClient:
 
     def update_message_response(self, message_id: str, response_text: str, *, completed: bool) -> None:
         self.response_updates.append((message_id, response_text, completed))
+        self.messages[message_id] = {
+            "message_id": message_id,
+            "status": MessageStatus.COMPLETED.value if completed else MessageStatus.WORKING.value,
+        }
+
+    def get_message(self, message_id: str) -> dict:
+        return self.messages.get(message_id, {"message_id": message_id, "status": MessageStatus.WORKING.value})
 
     def update_agent_context(self, short_id: str, context: str) -> None:
         self.context_updates.append((short_id, context))
@@ -702,6 +710,37 @@ def test_relay_watch_rejects_echo_only_completion() -> None:
         "not be accepted as completion"
     )
     assert "msg-1" in relay.watch_states
+
+
+def test_relay_watch_does_not_downgrade_terminal_hub_status() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    fake_hub.messages["msg-1"] = {
+        "message_id": "msg-1",
+        "status": MessageStatus.COMPLETED.value,
+    }
+    tmux = RecordingTmuxClient([])
+    tmux.captures["dev:0.1"] = "before\nstill visible output\n"
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
+    relay.watch_states["msg-1"] = WatchState(
+        target="dev:0.1",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+
+    updates = relay.update_watches_once()
+
+    assert updates == 0
+    assert fake_hub.status_updates == []
+    assert fake_hub.response_updates == []
+    assert "msg-1" not in relay.watch_states
 
 
 def test_strip_injected_message_echo_leaves_normal_response_delta() -> None:

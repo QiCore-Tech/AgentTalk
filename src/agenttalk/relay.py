@@ -382,6 +382,17 @@ class AgentTalkRelay:
         completed: list[str] = []
         updates = 0
         for message_id, state in list(self.watch_states.items()):
+            try:
+                current_message = self.hub_client.get_message(message_id)
+            except Exception:
+                current_message = None
+            if current_message and current_message.get("status") in {
+                MessageStatus.COMPLETED.value,
+                MessageStatus.FAILED.value,
+                MessageStatus.TIMEOUT.value,
+            }:
+                completed.append(message_id)
+                continue
             output = self.tmux_client.capture_output(state.target, lines=800)
             delta = output_delta(state.baseline, output)
             if not delta:
