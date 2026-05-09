@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+SUBMIT_INITIAL_DELAY_SECONDS = 0.4
+SUBMIT_RETRY_DELAY_SECONDS = 0.35
+SUBMIT_MAX_ATTEMPTS = 5
+
 
 @dataclass(frozen=True)
 class ManagedProcess:
@@ -140,24 +144,37 @@ class TmuxProcessManager(ProcessManager):
             self._submit_once(target)
 
     def _submit_once(self, target: str) -> None:
-        """Submit pasted input once.
+        """Submit pasted input, retrying only when the prompt still looks pending.
 
-        Retrying with multiple equivalent submit keys is unsafe for Codex-style
-        editors: when a paste was not accepted as a complete prompt, the extra
-        keys become blank input lines and make the prompt harder to recover.
-        Long AgentTalk messages are compacted/spooled before they reach tmux, so
-        a single Enter is the least surprising submit action.
+        Codex/Claude TUIs can need a short beat after a tmux paste before Enter
+        is interpreted as "submit" rather than another editor keystroke. This is
+        most visible for long AgentTalk messages, where the input box keeps the
+        pasted prompt and humans have to press Enter again. We therefore delay
+        the first submit slightly and only send follow-up Enter keys when the
+        terminal tail still appears to contain an unsubmitted AgentTalk prompt.
         """
 
-        submit = subprocess.run(
-            ["tmux", "send-keys", "-t", target, "Enter"],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if submit.returncode != 0:
-            raise RuntimeError(submit.stderr.strip() or "tmux submit failed")
-        self._wait_for_active_submission(target)
+        time.sleep(SUBMIT_INITIAL_DELAY_SECONDS)
+        for attempt in range(SUBMIT_MAX_ATTEMPTS):
+            submit = subprocess.run(
+                ["tmux", "send-keys", "-t", target, "Enter"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if submit.returncode != 0:
+                raise RuntimeError(submit.stderr.strip() or "tmux submit failed")
+            if self._wait_for_active_submission(target):
+                return
+            if attempt + 1 >= SUBMIT_MAX_ATTEMPTS:
+                return
+            try:
+                output = self.capture_output(target, lines=80)
+            except Exception:
+                return
+            if not _tail_shows_pending_agenttalk_input(output):
+                return
+            time.sleep(SUBMIT_RETRY_DELAY_SECONDS)
 
     def _wait_for_active_submission(self, target: str, *, timeout: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -386,6 +403,63 @@ def _tail_shows_active_agent_submission(output: str) -> bool:
         if any(status in line for status in active_statuses):
             return True
     return False
+
+
+def _tail_shows_pending_agenttalk_input(output: str) -> bool:
+    """Return True when the bottom of a pane still looks like unsent input.
+
+    This intentionally looks only at the terminal tail. Submitted prompts are
+    often echoed into scrollback, so seeing an AgentTalk marker anywhere is not
+    enough. We only retry when the marker is close to the bottom and there is no
+    evidence that the agent has started or completed a response after it.
+    """
+
+    tail_lines = output.splitlines()[-30:]
+    if not tail_lines:
+        return False
+
+    marker_index: int | None = None
+    markers = (
+        "[AgentTalk Message]",
+        "[Pasted Content",
+        "Full task is stored at",
+        "message_id:",
+        "<<<AGENTTALK_DONE:",
+    )
+    for index, line in enumerate(tail_lines):
+        if any(marker in line for marker in markers):
+            marker_index = index
+    if marker_index is None:
+        return False
+
+    # Old scrollback should not trigger another Enter.
+    if marker_index < max(len(tail_lines) - 12, 0):
+        return False
+
+    after_marker = tail_lines[marker_index + 1 :]
+    response_indicators = (
+        "<<<AGENTTALK_DONE:",
+        "• ",
+        "● ",
+        "Ran ",
+        "Explored",
+        "Edited",
+        "Findings:",
+        "Verdict:",
+        "ACCEPT",
+        "CONDITIONAL_ACCEPT",
+        "REVISE",
+    )
+    if any(any(indicator in line for indicator in response_indicators) for line in after_marker):
+        return False
+    if _tail_shows_active_agent_submission("\n".join(tail_lines)):
+        return False
+
+    prompt_window = tail_lines[max(marker_index - 2, 0) : marker_index + 1]
+    if any(line.lstrip().startswith(("›", ">")) for line in prompt_window):
+        return True
+    # Wrapped input can push the prompt glyph above the captured marker line.
+    return marker_index >= len(tail_lines) - 4
 
 
 def is_process_alive(pid: int) -> bool:

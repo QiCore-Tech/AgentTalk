@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import agenttalk.process_manager as process_manager
 from agenttalk.process_manager import _detect_agent_kind as detect_agent_kind
 from agenttalk.process_manager import _tail_shows_active_agent_submission
+from agenttalk.process_manager import _tail_shows_pending_agenttalk_input
 from agenttalk.process_manager import TmuxProcessManager
 
 
@@ -73,6 +74,8 @@ def test_inject_text_auto_submit_uses_single_enter(monkeypatch) -> None:
         "_wait_for_active_submission",
         lambda self, target: False,
     )
+    monkeypatch.setattr(TmuxProcessManager, "capture_output", lambda self, target, lines=80: "")
+    monkeypatch.setattr(process_manager.time, "sleep", lambda _seconds: None)
 
     TmuxProcessManager().inject_text("dev:0.1", "large\nmessage", submit=True)
 
@@ -82,7 +85,63 @@ def test_inject_text_auto_submit_uses_single_enter(monkeypatch) -> None:
     assert submit_calls == [["tmux", "send-keys", "-t", "dev:0.1", "Enter"]]
 
 
+def test_inject_text_auto_submit_retries_when_agenttalk_input_still_pending(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    captures = iter(
+        ["› [AgentTalk Message] message_id: msg-1 from: a to: b"]
+        * (process_manager.SUBMIT_MAX_ATTEMPTS - 1)
+    )
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(process_manager.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        TmuxProcessManager,
+        "_wait_for_active_submission",
+        lambda self, target: False,
+    )
+    monkeypatch.setattr(
+        TmuxProcessManager,
+        "capture_output",
+        lambda self, target, lines=80: next(captures),
+    )
+    monkeypatch.setattr(process_manager.time, "sleep", lambda _seconds: None)
+
+    TmuxProcessManager().inject_text("dev:0.1", "large\nmessage", submit=True)
+
+    submit_calls = [
+        call for call in calls if call[:4] == ["tmux", "send-keys", "-t", "dev:0.1"]
+    ]
+    assert submit_calls == [
+        ["tmux", "send-keys", "-t", "dev:0.1", "Enter"]
+    ] * process_manager.SUBMIT_MAX_ATTEMPTS
+
+
 def test_active_submission_detection_rejects_idle_completed_spinner() -> None:
     assert not _tail_shows_active_agent_submission("✻ Baked for 4m 42s")
     assert _tail_shows_active_agent_submission("✻ Thinking about task")
     assert _tail_shows_active_agent_submission("Working (esc to interrupt)")
+
+
+def test_pending_agenttalk_input_detection_is_tail_scoped() -> None:
+    assert _tail_shows_pending_agenttalk_input(
+        "header\n› [AgentTalk Message] message_id: msg-1 from: a to: b"
+    )
+    assert not _tail_shows_pending_agenttalk_input(
+        "\n".join(
+            [
+                "› [AgentTalk Message] message_id: msg-1 from: a to: b",
+                "• Ran pytest",
+                "Verdict: ACCEPT",
+            ]
+        )
+    )
+    assert not _tail_shows_pending_agenttalk_input(
+        "\n".join(["› [AgentTalk Message] message_id: msg-1"] + [f"line {i}" for i in range(20)])
+    )
+    assert _tail_shows_pending_agenttalk_input(
+        "› [Pasted Content 1023 chars] exact marker on its own line: "
+        "<<<AGENTTALK_DONE:msg-1>>>"
+    )
