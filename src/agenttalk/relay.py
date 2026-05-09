@@ -266,16 +266,35 @@ class AgentTalkRelay:
         )
 
     def run_once(self, *, context_counter: int = 0) -> int:
-        self.sync_once()
-        self.process_next_message_once()
-        self.update_watches_once()
+        # Heartbeat first so transient failures in any sub-step below cannot keep
+        # the relay's last_seen_at frozen for >heartbeat_ttl_seconds (which would
+        # cause the Hub to derive every agent on this machine as OFFLINE even when
+        # the panes are healthy and producing work).
+        self._safe_heartbeat()
+        for step in (self.sync_once, self.process_next_message_once, self.update_watches_once):
+            try:
+                step()
+            except Exception:
+                logger.exception("AgentTalk relay step %s failed; continuing", step.__name__)
         # Sync context every 6 intervals (~30s at the default interval).
         context_counter += 1
         if context_counter >= 6:
-            self.sync_context_once()
+            try:
+                self.sync_context_once()
+            except Exception:
+                logger.exception("AgentTalk relay sync_context_once failed; continuing")
             context_counter = 0
-        self.hub_client.heartbeat(self.config.machine_id)
+        # Belt-and-braces: best-effort heartbeat at end too. If sync_once succeeded
+        # it already re-registered the relay, so this refresh is cheap and gives
+        # the most accurate last_seen_at.
+        self._safe_heartbeat()
         return context_counter
+
+    def _safe_heartbeat(self) -> None:
+        try:
+            self.hub_client.heartbeat(self.config.machine_id)
+        except Exception:
+            logger.exception("AgentTalk relay heartbeat failed; will retry next tick")
 
     def run_forever(
         self,
@@ -314,17 +333,23 @@ class AgentTalkRelay:
             body=message["body"],
             done_marker=message["done_marker"],
         )
+        submit = binding.receive_mode == ReceiveMode.AUTO_SUBMIT
         try:
             baseline = self.tmux_client.capture_output(binding.tmux_target, lines=500)
             self.tmux_client.inject_text(
                 binding.tmux_target,
                 payload,
-                submit=binding.receive_mode == ReceiveMode.AUTO_SUBMIT,
+                submit=submit,
             )
         except Exception as exc:
             self.hub_client.update_message_status(message["message_id"], MessageStatus.FAILED, str(exc))
             return True
-        self.hub_client.update_message_status(message["message_id"], MessageStatus.INJECTED)
+        # Distinguish "fully delivered" (Enter pressed, agent has the message)
+        # from "pasted but not submitted" (text sits in the input box, agent has
+        # not seen it yet). Callers must NOT treat INJECTED_PASTE_ONLY as a
+        # confirmed delivery; they should verify via context or follow up.
+        injected_status = MessageStatus.INJECTED if submit else MessageStatus.INJECTED_PASTE_ONLY
+        self.hub_client.update_message_status(message["message_id"], injected_status)
         self.watch_states[message["message_id"]] = WatchState(
             target=binding.tmux_target,
             baseline=baseline,
@@ -341,8 +366,15 @@ class AgentTalkRelay:
             if not delta:
                 continue
             response_delta = strip_injected_message_echo(delta, state.done_marker)
-            done = state.done_marker in response_delta
-            response_text = response_delta.replace(state.done_marker, "").rstrip()
+            # Stricter completion check: the marker must appear on its own line
+            # (allowing leading/trailing whitespace) AND there must be non-empty
+            # response content before the marker. This rejects two failure
+            # modes that used to slip through `marker in response_delta`:
+            #   1. The marker as a mid-line substring of unrelated output.
+            #   2. An "echo-only" completion where the terminal scrolled the
+            #      injected prompt into the visible buffer twice but the agent
+            #      never actually replied.
+            done, response_text = _evaluate_done_marker(response_delta, state.done_marker)
             self.hub_client.update_message_response(message_id, response_text, completed=done)
             if done:
                 completed.append(message_id)
@@ -422,3 +454,43 @@ def strip_injected_message_echo(delta: str, done_marker: str) -> str:
     if marker_index < 0:
         return delta
     return delta[marker_index + len(done_marker) :].lstrip()
+
+
+def _evaluate_done_marker(response_delta: str, done_marker: str) -> tuple[bool, str]:
+    """Decide whether ``response_delta`` proves the peer printed the done marker.
+
+    Returns ``(done, response_text)``. ``done`` is True only when:
+
+    * The marker appears on its own line (whitespace before and after, and the
+      rest of the line is empty), so a stray substring in arbitrary output
+      cannot fake a completion.
+    * There is at least one line of non-empty, non-marker response text BEFORE
+      that marker line. The injected prompt is supposed to be stripped already;
+      requiring a real reply before the marker rejects "echo-only" completions
+      where the terminal scrolled the prompt into view twice but the peer never
+      actually answered.
+
+    ``response_text`` is the trimmed response with all marker lines removed.
+    """
+    if not done_marker:
+        return False, response_delta.rstrip()
+    # Locate marker lines: lines whose non-whitespace content is exactly the marker.
+    lines = response_delta.splitlines()
+    marker_line_indices: list[int] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == done_marker:
+            marker_line_indices.append(index)
+    response_lines_no_marker = [line for line in lines if line.strip() != done_marker]
+    response_text = "\n".join(response_lines_no_marker).rstrip()
+    if not marker_line_indices:
+        return False, response_text
+    # Require at least one non-empty response line BEFORE the first marker line.
+    first_marker = marker_line_indices[0]
+    has_real_content_before = any(
+        line.strip() and line.strip() != done_marker
+        for line in lines[:first_marker]
+    )
+    if not has_real_content_before:
+        return False, response_text
+    return True, response_text

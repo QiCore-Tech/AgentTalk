@@ -144,7 +144,42 @@ def test_relay_run_forever_retries_after_transient_hub_failure() -> None:
 
     assert fake_hub.attempts == 2
     assert fake_hub.registered is True
-    assert fake_hub.heartbeats == ["machine-a"]
+    # Heartbeat must fire on every iteration (even the one whose register_relay
+    # raised), otherwise a single transient hub error stalls the relay's
+    # last_seen_at long enough for the Hub to derive every agent as OFFLINE.
+    assert fake_hub.heartbeats.count("machine-a") >= 2
+
+
+class HeartbeatOnlyHubClient(FakeHubClient):
+    """HubClient stand-in whose sync_once-time call (register_relay) always fails.
+
+    Used to prove that run_once still heartbeats the relay even when the
+    sync_once leg of the loop is broken end-to-end.
+    """
+
+    def register_relay(self, _config: AgentTalkConfig) -> None:
+        raise RuntimeError("hub register endpoint is down")
+
+
+def test_run_once_heartbeats_even_when_sync_step_fails() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = HeartbeatOnlyHubClient()
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=StaticTmuxClient([]))
+
+    # sync_once will raise inside; run_once must catch and still heartbeat so
+    # the Hub does not flip every agent on this machine to OFFLINE after the
+    # heartbeat TTL expires.
+    relay.run_once()
+
+    assert fake_hub.heartbeats, "heartbeat must fire even when sync_once raised"
+    assert fake_hub.heartbeats[0] == "machine-a"
 
 
 def test_detect_errors_ignores_terminal_ui_failure_text() -> None:
@@ -316,6 +351,45 @@ def test_relay_process_next_message_respects_paste_only() -> None:
     AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).process_next_message_once()
 
     assert tmux.injections[0][2] is False
+    # Paste-only deliveries must surface a distinct status so the caller can tell
+    # the message is sitting in the pane's input box, not yet seen by the agent.
+    assert fake_hub.status_updates == [("msg-1", MessageStatus.INJECTED_PASTE_ONLY, "")]
+
+
+def test_relay_auto_submit_uses_injected_status() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+                receive_mode=ReceiveMode.AUTO_SUBMIT,
+            )
+        ],
+    )
+    fake_hub = FakeHubClient(
+        next_payload={
+            "message_id": "msg-1",
+            "sender": "bob",
+            "target": "alice-codex-api",
+            "body": "Please review.",
+            "done_marker": "<<<AGENTTALK_DONE:msg-1>>>",
+        }
+    )
+    tmux = RecordingTmuxClient([])
+
+    AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).process_next_message_once()
+
+    # Auto-submit deliveries keep the bare INJECTED status (Enter was sent).
+    assert fake_hub.status_updates == [("msg-1", MessageStatus.INJECTED, "")]
 
 
 def test_relay_watch_detects_done_marker() -> None:
@@ -411,6 +485,86 @@ def test_relay_watch_completes_after_echoed_prompt_and_agent_marker() -> None:
     assert updates == 1
     assert fake_hub.response_updates == [("msg-1", "ACK agenttalk reachable", True)]
     assert "msg-1" not in relay.watch_states
+
+
+def test_relay_watch_rejects_marker_substring_in_random_output() -> None:
+    """The marker must appear on its own line; a substring inside arbitrary
+    output (e.g., a fenced code block in the agent's reply) must NOT trigger a
+    false completion."""
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient([])
+    # The marker is embedded mid-line — not on its own line. This used to be
+    # treated as a completion because the old check was ``marker in delta``.
+    tmux.captures["dev:0.1"] = (
+        "before\n"
+        "I will print the marker like this <<<AGENTTALK_DONE:msg-1>>> as part of the explanation.\n"
+    )
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
+    relay.watch_states["msg-1"] = WatchState(
+        target="dev:0.1",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+
+    relay.update_watches_once()
+
+    completed_calls = [u for u in fake_hub.response_updates if u[2] is True]
+    assert completed_calls == [], (
+        "marker as mid-line substring must not be accepted as completion"
+    )
+    assert fake_hub.status_updates == [("msg-1", MessageStatus.WORKING, "")]
+    assert "msg-1" in relay.watch_states
+
+
+def test_relay_watch_rejects_echo_only_completion() -> None:
+    """If the only thing between the echoed prompt and a stray marker line is
+    blank output, that is NOT a completion — the peer never actually replied."""
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient([])
+    injected = build_injected_message(
+        message_id="msg-1",
+        sender="bob",
+        target="alice-codex-api",
+        body="Please reply.",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+    # Terminal echoed the prompt, then a second copy of the marker showed up
+    # (e.g., zsh echoed the typed text again as a command attempt) but there is
+    # no real response text between the two — only blank/whitespace lines.
+    tmux.captures["dev:0.1"] = (
+        f"before\n{injected}\n   \n\t\n<<<AGENTTALK_DONE:msg-1>>>\n"
+    )
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
+    relay.watch_states["msg-1"] = WatchState(
+        target="dev:0.1",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+
+    relay.update_watches_once()
+
+    completed_calls = [u for u in fake_hub.response_updates if u[2] is True]
+    assert completed_calls == [], (
+        "echo-only delta with no real response between echo and marker must "
+        "not be accepted as completion"
+    )
+    assert "msg-1" in relay.watch_states
 
 
 def test_strip_injected_message_echo_leaves_normal_response_delta() -> None:
