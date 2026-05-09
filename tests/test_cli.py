@@ -74,7 +74,7 @@ def test_send_watch_calls_watcher_with_message_id_keyword(monkeypatch) -> None:
     runner = CliRunner()
     watched: dict[str, object] = {}
 
-    class FakeResponse:
+    class FakePostResponse:
         status_code = 200
         text = ""
 
@@ -86,8 +86,23 @@ def test_send_watch_calls_watcher_with_message_id_keyword(monkeypatch) -> None:
                 "done_marker": "<<<AGENTTALK_DONE:msg-1>>>",
             }
 
-    def fake_post(*args, **kwargs) -> FakeResponse:
-        return FakeResponse()
+    class FakeAgentLookupResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {
+                "short_id": "alice-codex-api",
+                "kind": "codex",
+                "receive_mode": "auto_submit",
+                "status": "idle",
+            }
+
+    def fake_post(*args, **kwargs) -> FakePostResponse:
+        return FakePostResponse()
+
+    def fake_get(*args, **kwargs) -> FakeAgentLookupResponse:
+        return FakeAgentLookupResponse()
 
     def fake_watch_message(*, message_id: str, resolved_hub_url: str, resolved_token: str, timeout: int) -> None:
         watched.update(
@@ -100,6 +115,7 @@ def test_send_watch_calls_watcher_with_message_id_keyword(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(cli.httpx, "post", fake_post)
+    monkeypatch.setattr(cli.httpx, "get", fake_get)
     monkeypatch.setattr(cli, "watch_message", fake_watch_message)
 
     result = runner.invoke(
@@ -127,3 +143,226 @@ def test_send_watch_calls_watcher_with_message_id_keyword(monkeypatch) -> None:
         "resolved_token": "test-token",
         "timeout": 5,
     }
+
+
+def test_send_surfaces_evidence_trail(monkeypatch) -> None:
+    """Issue 6: send must surface message_id, target receive_mode, and explicit
+    Verify-with hints so the caller does not rely on a verbal `I sent it` claim."""
+    runner = CliRunner()
+
+    class FakePostResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {
+                "message_id": "msg-evidence",
+                "target": "alice-codex-api",
+                "status": "sent",
+                "done_marker": "<<<AGENTTALK_DONE:msg-evidence>>>",
+            }
+
+    class FakeAgentLookupResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {
+                "short_id": "alice-codex-api",
+                "kind": "codex",
+                "receive_mode": "paste_only",
+                "status": "idle",
+            }
+
+    monkeypatch.setattr(cli.httpx, "post", lambda *a, **k: FakePostResponse())
+    monkeypatch.setattr(cli.httpx, "get", lambda *a, **k: FakeAgentLookupResponse())
+
+    result = runner.invoke(
+        app,
+        [
+            "send",
+            "--to",
+            "alice-codex-api",
+            "--message",
+            "Please review.",
+            "--hub-url",
+            "http://hub.local:8787",
+            "--token",
+            "test-token",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "msg-evidence" in result.output
+    assert "target receive_mode: paste_only" in result.output
+    assert "paste_only" in result.output
+    # Verification hints must reference the actual message_id and target.
+    assert "agenttalk status msg-evidence" in result.output
+    assert "agenttalk response msg-evidence" in result.output
+    assert "agenttalk context alice-codex-api" in result.output
+
+
+def test_register_warns_when_worker_kind_uses_paste_only(tmp_path) -> None:
+    """Issue 5: worker-class kinds (claude/codex/gemini) MUST be auto_submit;
+    register must surface a clear warning when paste_only is used."""
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    runner.invoke(
+        app,
+        [
+            "setup",
+            "http://hub.local:8787",
+            "--token",
+            "test-token",
+            "--config-path",
+            str(config_path),
+        ],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "register",
+            "--short-id",
+            "alice-codex-api",
+            "--tmux-target",
+            "dev:0.1",
+            "--owner",
+            "alice",
+            "--kind",
+            "codex",
+            "--workspace",
+            "/workspace/api",
+            "--pane-id",
+            "%1",
+            "--receive-mode",
+            "paste_only",
+            "--no-sync",
+            "--config-path",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    # CliRunner merges stderr into output for typer.echo(err=True) calls.
+    combined = result.output
+    assert "paste_only" in combined
+    assert "worker class" in combined or "worker-class" in combined.lower() or "worker " in combined
+    config = load_config(config_path)
+    saved = next(b for b in config.agents if b.short_id == "alice-codex-api")
+    # The warning is advisory; the binding is still saved with the requested
+    # mode. The user must explicitly switch it.
+    assert saved.receive_mode.value == "paste_only"
+
+
+def test_register_auto_discovers_pane_id_when_visible(monkeypatch, tmp_path) -> None:
+    """Issue 4: when --pane-id is omitted but the tmux target is visible,
+    register must auto-discover and store the actual pane id."""
+    from agenttalk.process_manager import ManagedProcess
+    from agenttalk import cli as cli_module
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    runner.invoke(
+        app,
+        [
+            "setup",
+            "http://hub.local:8787",
+            "--token",
+            "test-token",
+            "--config-path",
+            str(config_path),
+        ],
+    )
+
+    fake_pane = ManagedProcess(
+        target="dev:0.1",
+        pane_id="%42",
+        command="codex",
+        current_path="/workspace/api",
+        title="codex",
+        kind="codex",
+        pane_pid=None,
+    )
+
+    class FakeManager:
+        def list_processes(self):
+            return [fake_pane]
+
+    monkeypatch.setattr(cli_module, "get_process_manager", lambda: FakeManager())
+
+    result = runner.invoke(
+        app,
+        [
+            "register",
+            "--short-id",
+            "alice-codex-api",
+            "--tmux-target",
+            "dev:0.1",
+            "--owner",
+            "alice",
+            "--kind",
+            "codex",
+            "--workspace",
+            "/workspace/api",
+            "--no-sync",
+            "--config-path",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Auto-discovered pane id" in result.output
+    assert "%42" in result.output
+    config = load_config(config_path)
+    saved = next(b for b in config.agents if b.short_id == "alice-codex-api")
+    assert saved.pane_id == "%42"
+
+
+def test_register_warns_when_pane_not_visible(monkeypatch, tmp_path) -> None:
+    """Issue 4: when --pane-id is omitted and the target is not currently
+    visible, register must warn about drift risk and still save the binding."""
+    from agenttalk import cli as cli_module
+
+    runner = CliRunner()
+    config_path = tmp_path / "config.json"
+    runner.invoke(
+        app,
+        [
+            "setup",
+            "http://hub.local:8787",
+            "--token",
+            "test-token",
+            "--config-path",
+            str(config_path),
+        ],
+    )
+
+    class FakeEmptyManager:
+        def list_processes(self):
+            return []
+
+    monkeypatch.setattr(cli_module, "get_process_manager", lambda: FakeEmptyManager())
+
+    result = runner.invoke(
+        app,
+        [
+            "register",
+            "--short-id",
+            "alice-codex-api",
+            "--tmux-target",
+            "dev:0.1",
+            "--kind",
+            "codex",
+            "--no-sync",
+            "--config-path",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    combined = result.output
+    assert "Registration drift" in combined or "not currently visible" in combined
+    config = load_config(config_path)
+    saved = next(b for b in config.agents if b.short_id == "alice-codex-api")
+    assert saved.pane_id == ""
