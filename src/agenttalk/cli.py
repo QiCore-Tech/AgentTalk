@@ -137,6 +137,27 @@ def discover() -> None:
         typer.echo(f"{index:<3} {pane.kind[:10]:10} {pane.target[:14]:14} {pane.pane_id[:8]:8} {pane.current_path}")
 
 
+WORKER_AGENT_KINDS = frozenset({"claude", "codex", "gemini", "opencode"})
+
+
+def _discover_pane_id(tmux_target: str) -> tuple[str, str | None]:
+    """Look up the actual pane_id and kind for a tmux target.
+
+    Returns ``(pane_id, kind)``. ``pane_id`` is the empty string when the
+    target is not currently visible to the process manager (the binding will
+    still be saved, but registration drift becomes possible). ``kind`` may be
+    None when discovery fails or returns no kind hint.
+    """
+    try:
+        manager = get_process_manager()
+        for pane in manager.list_processes():
+            if pane.target == tmux_target:
+                return pane.pane_id, pane.kind
+    except Exception:
+        return "", None
+    return "", None
+
+
 @app.command("register")
 def register(
     short_id: Annotated[str, typer.Option(help="Globally unique agent short ID.")],
@@ -150,15 +171,46 @@ def register(
     sync: Annotated[bool, typer.Option(help="Immediately upsert this binding to Hub.")] = True,
 ) -> None:
     config = load_config(config_path)
+    discovered_pane_id = ""
+    discovered_kind: str | None = None
+    if not pane_id:
+        # Issue 4: when pane_id is omitted, look up the live pane for the given
+        # tmux target so the binding is anchored to a concrete pane and not
+        # just a tmux address that may shift between window restarts.
+        discovered_pane_id, discovered_kind = _discover_pane_id(tmux_target)
+        if discovered_pane_id:
+            typer.echo(
+                f"Auto-discovered pane id for {tmux_target}: {discovered_pane_id}"
+            )
+        else:
+            typer.echo(
+                f"warning: pane_id not provided and tmux target {tmux_target} "
+                "is not currently visible. Registration drift is possible — "
+                "either pass --pane-id explicitly or re-run register once the "
+                "pane is alive.",
+                err=True,
+            )
+    effective_pane_id = pane_id or discovered_pane_id
     binding = AgentBinding(
         short_id=short_id,
         owner=owner or config.user_name,
         kind=kind,
         workspace=workspace,
         tmux_target=tmux_target,
-        pane_id=pane_id,
+        pane_id=effective_pane_id,
         receive_mode=receive_mode,
     )
+    # Issue 5: worker-class agents (claude / codex / gemini / opencode) drive
+    # the inter-agent message bus. They MUST be auto_submit; paste_only leaves
+    # the message sitting in the prompt input and the agent never sees it.
+    if kind in WORKER_AGENT_KINDS and receive_mode == ReceiveMode.PASTE_ONLY:
+        typer.echo(
+            f"warning: agent kind '{kind}' is a worker class and was registered "
+            f"with receive_mode=paste_only. paste_only leaves the message in "
+            f"the input box without pressing Enter — the agent will not see it "
+            f"until a human resubmits. Recommend `--receive-mode auto_submit`.",
+            err=True,
+        )
     config = upsert_binding(config, binding)
     save_config(config, config_path)
     if sync and config.token:
@@ -169,6 +221,11 @@ def register(
         )
         relay.sync_once()
     typer.echo(f"Registered local binding: {short_id}")
+    if effective_pane_id:
+        typer.echo(f"  pane_id: {effective_pane_id}")
+    typer.echo(f"  tmux_target: {tmux_target}")
+    typer.echo(f"  kind: {kind}")
+    typer.echo(f"  receive_mode: {receive_mode.value}")
 
 
 @app.command("unregister")
@@ -258,6 +315,22 @@ def send_message(
     if not resolved_token:
         raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    # Issue 6: look up the target's receive_mode BEFORE creating the message so
+    # the CLI surface tells the caller whether to expect auto_submit or
+    # paste_only behaviour. This is best-effort; if the lookup fails we still
+    # send the message but skip the receive-mode hint.
+    target_receive_mode: str | None = None
+    try:
+        target_lookup = httpx.get(
+            f"{resolved_hub_url.rstrip('/')}/api/agents/{to}",
+            headers=auth_headers(resolved_token),
+            timeout=10,
+        )
+        if target_lookup.status_code == 200:
+            target_receive_mode = target_lookup.json().get("receive_mode")
+    except Exception:
+        target_receive_mode = None
+
     response = httpx.post(
         f"{resolved_hub_url.rstrip('/')}/api/messages",
         headers=auth_headers(resolved_token),
@@ -272,6 +345,18 @@ def send_message(
     typer.echo(f"to: {payload['target']}")
     typer.echo(f"status: {payload['status']}")
     typer.echo(f"done marker: {payload['done_marker']}")
+    if target_receive_mode:
+        typer.echo(f"target receive_mode: {target_receive_mode}")
+        if target_receive_mode == ReceiveMode.PASTE_ONLY.value:
+            typer.echo(
+                "  note: paste_only — text is pasted into the input box but "
+                "Enter is NOT pressed. The agent has not seen the message "
+                "yet; verify out-of-band before treating this as delivered."
+            )
+    typer.echo("Verify with:")
+    typer.echo(f"  agenttalk status {payload['message_id']}")
+    typer.echo(f"  agenttalk response {payload['message_id']}")
+    typer.echo(f"  agenttalk context {payload['target']}")
     if watch:
         watch_message(
             message_id=payload["message_id"],

@@ -14,13 +14,13 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ManagedProcess:
-    target: str          # 进程标识符（类似 tmux target）
-    pane_id: str         #  Pane ID（Windows 下复用为 PID 字符串）
-    command: str         # 启动命令
-    current_path: str    # 工作目录
-    title: str           # 标题/描述
-    kind: str            # agent 类型
-    pane_pid: int | None # 进程 PID
+    target: str  # 进程标识符（类似 tmux target）
+    pane_id: str  #  Pane ID（Windows 下复用为 PID 字符串）
+    command: str  # 启动命令
+    current_path: str  # 工作目录
+    title: str  # 标题/描述
+    kind: str  # agent 类型
+    pane_pid: int | None  # 进程 PID
 
 
 class ProcessManager(abc.ABC):
@@ -43,7 +43,9 @@ class ProcessManager(abc.ABC):
         """捕获目标进程最近输出。"""
 
     @abc.abstractmethod
-    def start_process(self, target: str, command: list[str], cwd: str | None = None) -> ManagedProcess:
+    def start_process(
+        self, target: str, command: list[str], cwd: str | None = None
+    ) -> ManagedProcess:
         """启动新进程并纳入管理。"""
 
 
@@ -108,23 +110,67 @@ class TmuxProcessManager(ProcessManager):
             return None
 
     def inject_text(self, target: str, text: str, *, submit: bool) -> None:
-        proc = subprocess.run(
-            ["tmux", "send-keys", "-t", target, "-l", text],
+        buffer_name = f"agenttalk-{os.getpid()}-{time.time_ns()}"
+        load = subprocess.run(
+            ["tmux", "load-buffer", "-b", buffer_name, "-"],
+            input=text,
             text=True,
             capture_output=True,
             check=False,
         )
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or "tmux send-keys failed")
-        if submit:
-            enter = subprocess.run(
-                ["tmux", "send-keys", "-t", target, "Enter"],
+        if load.returncode != 0:
+            raise RuntimeError(load.stderr.strip() or "tmux load-buffer failed")
+        try:
+            paste = subprocess.run(
+                ["tmux", "paste-buffer", "-t", target, "-b", buffer_name],
                 text=True,
                 capture_output=True,
                 check=False,
             )
-            if enter.returncode != 0:
-                raise RuntimeError(enter.stderr.strip() or "tmux submit failed")
+            if paste.returncode != 0:
+                raise RuntimeError(paste.stderr.strip() or "tmux paste-buffer failed")
+        finally:
+            subprocess.run(
+                ["tmux", "delete-buffer", "-b", buffer_name],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        if submit:
+            self._submit_with_fallback(target)
+
+    def _submit_with_fallback(self, target: str) -> None:
+        """Submit pasted input and retry with equivalent submit keys if idle.
+
+        Claude/Codex-style TUIs sometimes leave large multiline pastes in the
+        editor after a single Enter. Enter, C-m, and C-j are accepted by
+        different terminal input stacks, so try them in order and stop early
+        when the pane shows active agent work.
+        """
+
+        for key in ("Enter", "C-m", "C-j"):
+            submit = subprocess.run(
+                ["tmux", "send-keys", "-t", target, key],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if submit.returncode != 0:
+                raise RuntimeError(submit.stderr.strip() or "tmux submit failed")
+            if self._wait_for_active_submission(target):
+                return
+
+    def _wait_for_active_submission(self, target: str, *, timeout: float = 2.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                output = self.capture_output(target, lines=80)
+            except Exception:
+                return False
+            if _tail_shows_active_agent_submission(output):
+                return True
+            time.sleep(0.25)
+        return False
 
     def capture_output(self, target: str, *, lines: int = 300) -> str:
         start = f"-{max(lines, 1)}"
@@ -138,7 +184,9 @@ class TmuxProcessManager(ProcessManager):
             raise RuntimeError(proc.stderr.strip() or "tmux capture-pane failed")
         return proc.stdout
 
-    def start_process(self, target: str, command: list[str], cwd: str | None = None) -> ManagedProcess:
+    def start_process(
+        self, target: str, command: list[str], cwd: str | None = None
+    ) -> ManagedProcess:
         session_name, _, pane_spec = target.partition(":")
         window_idx, _, _ = pane_spec.partition(".")
         if not window_idx:
@@ -147,13 +195,17 @@ class TmuxProcessManager(ProcessManager):
         # 创建 session + window
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", session_name, "-n", window_idx],
-            text=True, capture_output=True, check=False,
+            text=True,
+            capture_output=True,
+            check=False,
         )
         # 启动命令
         cmd_str = subprocess.list2cmdline(command)
         subprocess.run(
             ["tmux", "send-keys", "-t", target, "-l", cmd_str, "Enter"],
-            text=True, capture_output=True, check=False,
+            text=True,
+            capture_output=True,
+            check=False,
         )
         time.sleep(0.5)
         processes = self.list_processes()
@@ -225,6 +277,7 @@ class SubprocessProcessManager(ProcessManager):
     def _get_process_cmdline(self, pid: int) -> str | None:
         try:
             import psutil
+
             proc = psutil.Process(pid)
             return " ".join(proc.cmdline())
         except Exception:
@@ -266,9 +319,11 @@ class SubprocessProcessManager(ProcessManager):
             return ""
         content = log_file.read_text(encoding="utf-8", errors="replace")
         all_lines = content.splitlines()
-        return "\n".join(all_lines[-max(lines, 1):])
+        return "\n".join(all_lines[-max(lines, 1) :])
 
-    def start_process(self, target: str, command: list[str], cwd: str | None = None) -> ManagedProcess:
+    def start_process(
+        self, target: str, command: list[str], cwd: str | None = None
+    ) -> ManagedProcess:
         log_file = self._log_path(target)
         log_file.parent.mkdir(parents=True, exist_ok=True)
         # 启动进程，stdout/stderr 重定向到日志文件
@@ -280,7 +335,9 @@ class SubprocessProcessManager(ProcessManager):
                 stdin=subprocess.PIPE,
                 text=True,
                 cwd=cwd,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if platform.system() == "Windows" else 0,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                if platform.system() == "Windows"
+                else 0,
             )
         self._procs[target] = proc
         self._save_registry()
@@ -307,11 +364,37 @@ def _detect_agent_kind(*, command: str, title: str = "") -> str:
     return "unknown"
 
 
+def _tail_shows_active_agent_submission(output: str) -> bool:
+    tail = "\n".join(output.splitlines()[-30:])
+    if "Working (" in tail or "esc to interrupt" in tail:
+        return True
+    active_statuses = (
+        "Crystallizing",
+        "Synthesizing",
+        "Blanching",
+        "Sautéing",
+        "Churning",
+        "Ionizing",
+        "Thinking",
+        "Working",
+    )
+    spinner_prefixes = ("·", "✢", "✻", "✶", "✺", "✷", "✸", "✹")
+    for line in (line.strip() for line in tail.splitlines()[-10:]):
+        if not line:
+            continue
+        if not any(line.startswith(prefix) for prefix in spinner_prefixes):
+            continue
+        if any(status in line for status in active_statuses):
+            return True
+    return False
+
+
 def is_process_alive(pid: int) -> bool:
     """跨平台进程存活检测。"""
     if platform.system() == "Windows":
         try:
             import ctypes
+
             kernel32 = ctypes.windll.kernel32
             handle = kernel32.OpenProcess(1, False, pid)  # PROCESS_TERMINATE = 1
             if handle:
