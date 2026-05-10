@@ -27,6 +27,15 @@ class ManagedProcess:
     pane_pid: int | None  # 进程 PID
 
 
+@dataclass(frozen=True)
+class InjectionResult:
+    pasted: bool
+    submit_requested: bool
+    submit_confirmed: bool
+    pending_input_detected: bool
+    attempts: int = 0
+
+
 class ProcessManager(abc.ABC):
     """跨平台进程管理抽象接口。"""
 
@@ -39,7 +48,7 @@ class ProcessManager(abc.ABC):
         """获取目标进程的 PID。"""
 
     @abc.abstractmethod
-    def inject_text(self, target: str, text: str, *, submit: bool) -> None:
+    def inject_text(self, target: str, text: str, *, submit: bool) -> InjectionResult | None:
         """向目标进程注入文本。"""
 
     @abc.abstractmethod
@@ -113,7 +122,7 @@ class TmuxProcessManager(ProcessManager):
         except (ValueError, IndexError):
             return None
 
-    def inject_text(self, target: str, text: str, *, submit: bool) -> None:
+    def inject_text(self, target: str, text: str, *, submit: bool) -> InjectionResult:
         buffer_name = f"agenttalk-{os.getpid()}-{time.time_ns()}"
         load = subprocess.run(
             ["tmux", "load-buffer", "-b", buffer_name, "-"],
@@ -140,10 +149,24 @@ class TmuxProcessManager(ProcessManager):
                 capture_output=True,
                 check=False,
             )
-        if submit:
-            self._submit_once(target)
+        if not submit:
+            return InjectionResult(
+                pasted=True,
+                submit_requested=False,
+                submit_confirmed=False,
+                pending_input_detected=True,
+                attempts=0,
+            )
+        submit_confirmed, pending_input_detected, attempts = self._submit_once(target)
+        return InjectionResult(
+            pasted=True,
+            submit_requested=True,
+            submit_confirmed=submit_confirmed,
+            pending_input_detected=pending_input_detected,
+            attempts=attempts,
+        )
 
-    def _submit_once(self, target: str) -> None:
+    def _submit_once(self, target: str) -> tuple[bool, bool, int]:
         """Submit pasted input, retrying only when the prompt still looks pending.
 
         Codex/Claude TUIs can need a short beat after a tmux paste before Enter
@@ -156,6 +179,7 @@ class TmuxProcessManager(ProcessManager):
 
         time.sleep(SUBMIT_INITIAL_DELAY_SECONDS)
         for attempt in range(SUBMIT_MAX_ATTEMPTS):
+            attempt_count = attempt + 1
             submit = subprocess.run(
                 ["tmux", "send-keys", "-t", target, "Enter"],
                 text=True,
@@ -165,16 +189,22 @@ class TmuxProcessManager(ProcessManager):
             if submit.returncode != 0:
                 raise RuntimeError(submit.stderr.strip() or "tmux submit failed")
             if self._wait_for_active_submission(target):
-                return
+                return True, False, attempt_count
             if attempt + 1 >= SUBMIT_MAX_ATTEMPTS:
-                return
+                break
             try:
                 output = self.capture_output(target, lines=80)
             except Exception:
-                return
-            if not _tail_shows_pending_agenttalk_input(output):
-                return
+                return False, False, attempt_count
+            pending_input = _tail_shows_pending_agenttalk_input(output)
+            if not pending_input:
+                return True, False, attempt_count
             time.sleep(SUBMIT_RETRY_DELAY_SECONDS)
+        try:
+            output = self.capture_output(target, lines=80)
+        except Exception:
+            return False, False, SUBMIT_MAX_ATTEMPTS
+        return False, _tail_shows_pending_agenttalk_input(output), SUBMIT_MAX_ATTEMPTS
 
     def _wait_for_active_submission(self, target: str, *, timeout: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -308,7 +338,7 @@ class SubprocessProcessManager(ProcessManager):
                 pass
         return None
 
-    def inject_text(self, target: str, text: str, *, submit: bool) -> None:
+    def inject_text(self, target: str, text: str, *, submit: bool) -> InjectionResult:
         # Windows 下通过 stdin 注入
         proc = self._procs.get(target)
         if proc is None:
@@ -328,6 +358,13 @@ class SubprocessProcessManager(ProcessManager):
         if submit:
             proc.stdin.write(os.linesep)
         proc.stdin.flush()
+        return InjectionResult(
+            pasted=True,
+            submit_requested=submit,
+            submit_confirmed=submit,
+            pending_input_detected=not submit,
+            attempts=1 if submit else 0,
+        )
 
     def capture_output(self, target: str, *, lines: int = 300) -> str:
         log_file = self._log_path(target)

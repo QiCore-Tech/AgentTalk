@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agenttalk.config import AgentTalkConfig
+from agenttalk.dlq import record_dead_letter
 from agenttalk.hub.client import HubClient
 from agenttalk.hub.models import AgentHealthReport, AgentStatus, MessageStatus, ReceiveMode
 from agenttalk.process_manager import (
@@ -357,19 +358,32 @@ class AgentTalkRelay:
         submit = binding.receive_mode == ReceiveMode.AUTO_SUBMIT
         try:
             baseline = self.tmux_client.capture_output(binding.tmux_target, lines=500)
-            self.tmux_client.inject_text(
+            injection_result = self.tmux_client.inject_text(
                 binding.tmux_target,
                 payload,
                 submit=submit,
             )
         except Exception as exc:
             self.hub_client.update_message_status(message["message_id"], MessageStatus.FAILED, str(exc))
+            record_dead_letter(message=message, reason="inject_failed", error=str(exc))
             return True
         # Distinguish "fully delivered" (Enter pressed, agent has the message)
         # from "pasted but not submitted" (text sits in the input box, agent has
         # not seen it yet). Callers must NOT treat INJECTED_PASTE_ONLY as a
         # confirmed delivery; they should verify via context or follow up.
-        injected_status = MessageStatus.INJECTED if submit else MessageStatus.INJECTED_PASTE_ONLY
+        if not submit:
+            injected_status = MessageStatus.INJECTED_PASTE_ONLY
+        elif injection_result is not None and injection_result.submit_confirmed:
+            injected_status = MessageStatus.SUBMITTED
+        elif injection_result is not None and injection_result.pending_input_detected:
+            injected_status = MessageStatus.SUBMIT_UNCONFIRMED
+            record_dead_letter(
+                message=message,
+                reason="submit_unconfirmed",
+                error=f"submit attempts: {injection_result.attempts}",
+            )
+        else:
+            injected_status = MessageStatus.INJECTED
         self.hub_client.update_message_status(message["message_id"], injected_status)
         self.watch_states[message["message_id"]] = WatchState(
             target=binding.tmux_target,
@@ -398,6 +412,7 @@ class AgentTalkRelay:
             if not delta:
                 continue
             response_delta = strip_injected_message_echo(delta, state.done_marker)
+            acked, response_delta = strip_agenttalk_ack(response_delta, message_id)
             # Stricter completion check: the marker must appear on its own line
             # (allowing leading/trailing whitespace) AND there must be non-empty
             # response content before the marker. This rejects two failure
@@ -410,6 +425,8 @@ class AgentTalkRelay:
             self.hub_client.update_message_response(message_id, response_text, completed=done)
             if done:
                 completed.append(message_id)
+            elif acked:
+                self.hub_client.update_message_status(message_id, MessageStatus.ACKED)
             else:
                 self.hub_client.update_message_status(message_id, MessageStatus.WORKING)
             updates += 1
@@ -486,6 +503,8 @@ def prepare_injected_message(
         return (
             f"[AgentTalk Message] message_id: {message_id} from: {sender} to: {target}. "
             f"Task: {task} "
+            "First print this exact acknowledgement on its own line: "
+            f"AGENTTALK_ACK:{message_id}. "
             "When done, print this exact marker on its own line: "
             f"{done_marker}"
         )
@@ -508,6 +527,8 @@ def prepare_injected_message(
         f"Full task is stored at {spool_path} (sha256:{digest}). "
         "Read that file first, then perform the task. "
         f"Preview: {preview} "
+        "First print this exact acknowledgement on its own line: "
+        f"AGENTTALK_ACK:{message_id}. "
         "When done, print this exact marker on its own line: "
         f"{done_marker}"
     )
@@ -523,6 +544,9 @@ def build_injected_message(*, message_id: str, sender: str, target: str, body: s
             "",
             "Task:",
             body.strip(),
+            "",
+            "First print this exact acknowledgement on its own line:",
+            f"AGENTTALK_ACK:{message_id}",
             "",
             "When done, print this exact marker on its own line:",
             done_marker,
@@ -558,6 +582,18 @@ def strip_injected_message_echo(delta: str, done_marker: str) -> str:
     if marker_index < 0:
         return delta
     return delta[marker_index + len(done_marker) :].lstrip()
+
+
+def strip_agenttalk_ack(response_delta: str, message_id: str) -> tuple[bool, str]:
+    ack_line = f"AGENTTALK_ACK:{message_id}"
+    acked = False
+    kept_lines: list[str] = []
+    for line in response_delta.splitlines():
+        if line.strip() == ack_line:
+            acked = True
+            continue
+        kept_lines.append(line)
+    return acked, "\n".join(kept_lines).lstrip()
 
 
 def _evaluate_done_marker(response_delta: str, done_marker: str) -> tuple[bool, str]:

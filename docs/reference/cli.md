@@ -43,7 +43,7 @@ uv run agenttalk register \
   --owner alice \
   --kind codex \
   --workspace /workspace/service-api
-uv run agenttalk daemon start
+uv run agenttalk daemon install
 ```
 
 ## Common Commands
@@ -86,6 +86,22 @@ Read recent context:
 
 ```bash
 uv run agenttalk context alice-codex-api --lines 120
+```
+
+Check local relay health:
+
+```bash
+uv run agenttalk doctor
+uv run agenttalk daemon status
+uv run agenttalk daemon restart
+```
+
+Inspect delivery failures:
+
+```bash
+uv run agenttalk dlq list
+uv run agenttalk dlq retry msg-20260506170000000000
+uv run agenttalk dlq fail msg-20260506170000000000 --reason "manual close"
 ```
 
 Update local registration:
