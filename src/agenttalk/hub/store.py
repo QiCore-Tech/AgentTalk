@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -142,14 +143,102 @@ class HubStore:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                -- User machines (development environments)
+                CREATE TABLE IF NOT EXISTS machines (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    host_name TEXT NOT NULL,
+                    relay_machine_id TEXT UNIQUE NOT NULL,
+                    status TEXT DEFAULT 'offline',
+                    last_seen_at TEXT,
+                    capabilities TEXT,
+                    visibility TEXT DEFAULT 'private',
+                    shared_with TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_machines_user ON machines(user_id);
+                CREATE INDEX IF NOT EXISTS idx_machines_relay ON machines(relay_machine_id);
+
+                -- Workspaces
+                CREATE TABLE IF NOT EXISTS workspaces (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    owner_id TEXT NOT NULL,
+                    machine_id INTEGER NOT NULL,
+                    description TEXT,
+                    visibility TEXT DEFAULT 'private',
+                    shared_with TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(machine_id) REFERENCES machines(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_workspaces_owner ON workspaces(owner_id);
+                CREATE INDEX IF NOT EXISTS idx_workspaces_machine ON workspaces(machine_id);
+
+                -- Tasks (orchestrator job tickets)
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT UNIQUE NOT NULL,
+                    type TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    owner_id TEXT NOT NULL,
+                    target_workspace_id INTEGER,
+                    target_machine_id INTEGER,
+                    raw_request TEXT,
+                    parsed_steps TEXT NOT NULL,
+                    result TEXT,
+                    logs TEXT,
+                    created_agent_id TEXT,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    timeout_seconds INTEGER DEFAULT 3600,
+                    error TEXT,
+                    current_step INTEGER DEFAULT 0,
+                    total_steps INTEGER DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner_id);
+                CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+                CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
+
+                -- Agent permissions
+                CREATE TABLE IF NOT EXISTS agent_permissions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_short_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    permission TEXT NOT NULL,
+                    granted_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(agent_short_id, user_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_permissions_agent ON agent_permissions(agent_short_id);
+                CREATE INDEX IF NOT EXISTS idx_permissions_user ON agent_permissions(user_id);
                 """
             )
-            # Migrate existing databases: add auto_resume columns if missing
-            try:
-                conn.execute("SELECT auto_resume_enabled FROM agents LIMIT 1")
-            except sqlite3.OperationalError:
-                conn.execute("ALTER TABLE agents ADD COLUMN auto_resume_enabled INTEGER DEFAULT 1")
-                conn.execute("ALTER TABLE agents ADD COLUMN auto_resume_message TEXT DEFAULT '继续'")
+
+            # Migrate existing databases
+            self._migrate_schema(conn)
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """Apply schema migrations for existing databases."""
+        # Migrate: add auto_resume columns if missing
+        try:
+            conn.execute("SELECT auto_resume_enabled FROM agents LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE agents ADD COLUMN auto_resume_enabled INTEGER DEFAULT 1")
+            conn.execute("ALTER TABLE agents ADD COLUMN auto_resume_message TEXT DEFAULT '继续'")
+
+        # Migrate: add workspace_id and created_by to agents
+        try:
+            conn.execute("SELECT workspace_id FROM agents LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE agents ADD COLUMN workspace_id INTEGER")
+        try:
+            conn.execute("SELECT created_by FROM agents LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute("ALTER TABLE agents ADD COLUMN created_by TEXT")
 
     def register_relay(self, request: RelayRegisterRequest) -> RelayResponse:
         now = format_time(utc_now())
@@ -638,3 +727,408 @@ class HubStore:
                 "INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
             )
+
+    # ==================== Machine Management ====================
+
+    def create_machine(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        host_name: str,
+        relay_machine_id: str,
+        capabilities: list[str] | None = None,
+    ) -> dict:
+        """Register a new machine for a user."""
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO machines (user_id, name, host_name, relay_machine_id, status, capabilities, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    name,
+                    host_name,
+                    relay_machine_id,
+                    "online",
+                    json.dumps(capabilities or []),
+                    now,
+                ),
+            )
+        return {
+            "id": cursor.lastrowid,
+            "user_id": user_id,
+            "name": name,
+            "host_name": host_name,
+            "relay_machine_id": relay_machine_id,
+            "status": "online",
+            "created_at": now,
+        }
+
+    def get_machine(self, machine_id: int) -> dict | None:
+        """Get machine by ID."""
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM machines WHERE id = ?", (machine_id,)).fetchone()
+        if row is None:
+            return None
+        return self._machine_from_row(row)
+
+    def get_machine_by_relay(self, relay_machine_id: str) -> dict | None:
+        """Get machine by relay_machine_id."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM machines WHERE relay_machine_id = ?", (relay_machine_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return self._machine_from_row(row)
+
+    def list_machines(self, user_id: str | None = None) -> list[dict]:
+        """List machines. If user_id provided, filter by owner."""
+        with self.connect() as conn:
+            if user_id:
+                rows = conn.execute(
+                    "SELECT * FROM machines WHERE user_id = ? ORDER BY created_at DESC",
+                    (user_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM machines ORDER BY created_at DESC").fetchall()
+        return [self._machine_from_row(row) for row in rows]
+
+    def update_machine_status(self, machine_id: int, status: str, last_seen_at: str | None = None) -> None:
+        """Update machine status and last seen time."""
+        now = last_seen_at or format_time(utc_now())
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE machines SET status = ?, last_seen_at = ? WHERE id = ?",
+                (status, now, machine_id),
+            )
+
+    def delete_machine(self, machine_id: int) -> bool:
+        """Delete a machine and its associated workspaces."""
+        with self.connect() as conn:
+            # Delete associated workspaces first
+            conn.execute("DELETE FROM workspaces WHERE machine_id = ?", (machine_id,))
+            # Delete machine
+            cursor = conn.execute("DELETE FROM machines WHERE id = ?", (machine_id,))
+        return cursor.rowcount > 0
+
+    def _machine_from_row(self, row: sqlite3.Row) -> dict:
+        """Convert a database row to a machine dict."""
+        return {
+            "id": row["id"],
+            "user_id": str(row["user_id"]),
+            "name": str(row["name"]),
+            "host_name": str(row["host_name"]),
+            "relay_machine_id": str(row["relay_machine_id"]),
+            "status": str(row["status"]),
+            "last_seen_at": str(row["last_seen_at"]) if row["last_seen_at"] else None,
+            "capabilities": json.loads(str(row["capabilities"])) if row["capabilities"] else [],
+            "visibility": str(row["visibility"]),
+            "shared_with": json.loads(str(row["shared_with"])) if row["shared_with"] else [],
+            "created_at": str(row["created_at"]),
+        }
+
+    # ==================== Workspace Management ====================
+
+    def create_workspace(
+        self,
+        *,
+        name: str,
+        path: str,
+        owner_id: str,
+        machine_id: int,
+        description: str = "",
+    ) -> dict:
+        """Create a new workspace."""
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO workspaces (name, path, owner_id, machine_id, description, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (name, path, owner_id, machine_id, description, now),
+            )
+        return {
+            "id": cursor.lastrowid,
+            "name": name,
+            "path": path,
+            "owner_id": owner_id,
+            "machine_id": machine_id,
+            "description": description,
+            "created_at": now,
+        }
+
+    def get_workspace(self, workspace_id: int) -> dict | None:
+        """Get workspace by ID."""
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM workspaces WHERE id = ?", (workspace_id,)).fetchone()
+        if row is None:
+            return None
+        return self._workspace_from_row(row)
+
+    def list_workspaces(self, user_id: str | None = None, machine_id: int | None = None) -> list[dict]:
+        """List workspaces with optional filters."""
+        with self.connect() as conn:
+            if user_id and machine_id:
+                rows = conn.execute(
+                    "SELECT * FROM workspaces WHERE owner_id = ? AND machine_id = ? ORDER BY created_at DESC",
+                    (user_id, machine_id),
+                ).fetchall()
+            elif user_id:
+                rows = conn.execute(
+                    "SELECT * FROM workspaces WHERE owner_id = ? ORDER BY created_at DESC",
+                    (user_id,),
+                ).fetchall()
+            elif machine_id:
+                rows = conn.execute(
+                    "SELECT * FROM workspaces WHERE machine_id = ? ORDER BY created_at DESC",
+                    (machine_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM workspaces ORDER BY created_at DESC").fetchall()
+        return [self._workspace_from_row(row) for row in rows]
+
+    def delete_workspace(self, workspace_id: int) -> bool:
+        """Delete a workspace."""
+        with self.connect() as conn:
+            cursor = conn.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+        return cursor.rowcount > 0
+
+    def _workspace_from_row(self, row: sqlite3.Row) -> dict:
+        """Convert a database row to a workspace dict."""
+        return {
+            "id": row["id"],
+            "name": str(row["name"]),
+            "path": str(row["path"]),
+            "owner_id": str(row["owner_id"]),
+            "machine_id": row["machine_id"],
+            "description": str(row["description"]) if row["description"] else "",
+            "visibility": str(row["visibility"]),
+            "shared_with": json.loads(str(row["shared_with"])) if row["shared_with"] else [],
+            "created_at": str(row["created_at"]),
+        }
+
+    # ==================== Task Management ====================
+
+    def create_task(
+        self,
+        *,
+        task_id: str,
+        owner_id: str,
+        task_type: str,
+        target_machine_id: int | None = None,
+        target_workspace_id: int | None = None,
+        raw_request: str = "",
+        parsed_steps: str = "",
+        timeout_seconds: int = 3600,
+    ) -> dict:
+        """Create a new task."""
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, type, status, owner_id, target_machine_id, target_workspace_id,
+                    raw_request, parsed_steps, timeout_seconds, created_at, total_steps
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    task_type,
+                    "pending",
+                    owner_id,
+                    target_machine_id,
+                    target_workspace_id,
+                    raw_request,
+                    parsed_steps,
+                    timeout_seconds,
+                    now,
+                    len(json.loads(parsed_steps)) if parsed_steps else 0,
+                ),
+            )
+        return {
+            "id": cursor.lastrowid,
+            "task_id": task_id,
+            "status": "pending",
+            "owner_id": owner_id,
+            "created_at": now,
+        }
+
+    def get_task(self, task_id: str) -> dict | None:
+        """Get task by task_id."""
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        if row is None:
+            return None
+        return self._task_from_row(row)
+
+    def update_task_status(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        error: str = "",
+        current_step: int | None = None,
+        result: str = "",
+    ) -> None:
+        """Update task status and optional fields."""
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            updates = ["status = ?", "updated_at = ?"]
+            params: list[Any] = [status, now]
+
+            if error:
+                updates.append("error = ?")
+                params.append(error)
+            if current_step is not None:
+                updates.append("current_step = ?")
+                params.append(current_step)
+            if result:
+                updates.append("result = ?")
+                params.append(result)
+
+            if status == "running":
+                updates.append("started_at = ?")
+                params.append(now)
+            elif status in ("completed", "failed", "cancelled"):
+                updates.append("completed_at = ?")
+                params.append(now)
+
+            params.append(task_id)
+
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(updates)} WHERE task_id = ?",
+                params,
+            )
+
+    def append_task_log(self, task_id: str, log_line: str) -> None:
+        """Append a line to task logs."""
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            row = conn.execute("SELECT logs FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            current_logs = str(row["logs"]) if row and row["logs"] else ""
+            new_logs = current_logs + f"\n[{now}] {log_line}" if current_logs else f"[{now}] {log_line}"
+            conn.execute(
+                "UPDATE tasks SET logs = ? WHERE task_id = ?",
+                (new_logs, task_id),
+            )
+
+    def list_tasks(
+        self,
+        user_id: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List tasks with optional filters."""
+        with self.connect() as conn:
+            query = "SELECT * FROM tasks"
+            params: list[Any] = []
+            conditions = []
+
+            if user_id:
+                conditions.append("owner_id = ?")
+                params.append(user_id)
+            if status:
+                conditions.append("status = ?")
+                params.append(status)
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+
+            query += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+
+            rows = conn.execute(query, params).fetchall()
+        return [self._task_from_row(row) for row in rows]
+
+    def _task_from_row(self, row: sqlite3.Row) -> dict:
+        """Convert a database row to a task dict."""
+        return {
+            "id": row["id"],
+            "task_id": str(row["task_id"]),
+            "type": str(row["type"]),
+            "status": str(row["status"]),
+            "owner_id": str(row["owner_id"]),
+            "target_workspace_id": row["target_workspace_id"],
+            "target_machine_id": row["target_machine_id"],
+            "raw_request": str(row["raw_request"]) if row["raw_request"] else "",
+            "parsed_steps": str(row["parsed_steps"]) if row["parsed_steps"] else "",
+            "result": str(row["result"]) if row["result"] else "",
+            "logs": str(row["logs"]) if row["logs"] else "",
+            "created_agent_id": str(row["created_agent_id"]) if row["created_agent_id"] else None,
+            "created_at": str(row["created_at"]),
+            "started_at": str(row["started_at"]) if row["started_at"] else None,
+            "completed_at": str(row["completed_at"]) if row["completed_at"] else None,
+            "timeout_seconds": row["timeout_seconds"],
+            "error": str(row["error"]) if row["error"] else "",
+            "current_step": row["current_step"],
+            "total_steps": row["total_steps"],
+        }
+
+    # ==================== Permission Management ====================
+
+    def grant_permission(
+        self,
+        agent_short_id: str,
+        user_id: str,
+        permission: str,
+        granted_by: str,
+    ) -> bool:
+        """Grant permission to a user for an agent."""
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO agent_permissions (agent_short_id, user_id, permission, granted_by, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(agent_short_id, user_id) DO UPDATE SET
+                        permission = excluded.permission,
+                        granted_by = excluded.granted_by,
+                        created_at = excluded.created_at
+                    """,
+                    (agent_short_id, user_id, permission, granted_by, now),
+                )
+                return True
+            except sqlite3.Error:
+                return False
+
+    def revoke_permission(self, agent_short_id: str, user_id: str) -> bool:
+        """Revoke permission from a user for an agent."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM agent_permissions WHERE agent_short_id = ? AND user_id = ?",
+                (agent_short_id, user_id),
+            )
+        return cursor.rowcount > 0
+
+    def check_permission(self, agent_short_id: str, user_id: str) -> str | None:
+        """Check user's permission for an agent. Returns permission level or None."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT permission FROM agent_permissions WHERE agent_short_id = ? AND user_id = ?",
+                (agent_short_id, user_id),
+            ).fetchone()
+        return str(row["permission"]) if row else None
+
+    def list_permissions(self, agent_short_id: str) -> list[dict]:
+        """List all permissions for an agent."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM agent_permissions WHERE agent_short_id = ?",
+                (agent_short_id,),
+            ).fetchall()
+        return [
+            {
+                "user_id": str(row["user_id"]),
+                "permission": str(row["permission"]),
+                "granted_by": str(row["granted_by"]),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
