@@ -30,6 +30,7 @@ tmux agent pane
 - M5: React/Vite Web console.
 - M6: xterm.js terminal view and Hub WebSocket bridge.
 - Feishu bot: long-connection command entry point.
+- P0 reliability hardening: submit confirmation, agent ACK detection, local DLQ, daemon supervisor, and `agenttalk doctor`.
 - Docker Hub deployment.
 
 ## Current Limitations

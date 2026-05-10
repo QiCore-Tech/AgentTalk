@@ -23,6 +23,9 @@ class MessageStatus(StrEnum):
     SENT = "sent"
     DELIVERED = "delivered"
     INJECTED = "injected"
+    SUBMITTED = "submitted"
+    ACKED = "acked"
+    SUBMIT_UNCONFIRMED = "submit_unconfirmed"
     # Text was pasted into the target pane but Enter was NOT submitted because
     # the binding is in paste_only receive mode. The peer has the message in
     # their input box but has not seen it yet — caller must verify out-of-band

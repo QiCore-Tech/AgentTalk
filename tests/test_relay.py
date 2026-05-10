@@ -4,13 +4,17 @@ from dataclasses import dataclass, field
 
 from agenttalk.config import AgentBinding, AgentTalkConfig
 from agenttalk.hub.models import AgentStatus, MessageStatus, ReceiveMode
+from agenttalk.process_manager import InjectionResult
 from agenttalk.relay import (
     AgentTalkRelay,
     StaticTmuxClient,
     WatchState,
     build_injected_message,
     detect_errors,
+    prepare_injected_message,
+    strip_agenttalk_ack,
     strip_injected_message_echo,
+    tail_shows_live_agent_ui,
 )
 from agenttalk.tmux import TmuxPane
 
@@ -24,6 +28,7 @@ class FakeHubClient:
     response_updates: list[tuple[str, str, bool]] = field(default_factory=list)
     context_updates: list[tuple[str, str]] = field(default_factory=list)
     heartbeats: list[str] = field(default_factory=list)
+    messages: dict[str, dict] = field(default_factory=dict)
 
     def register_relay(self, _config: AgentTalkConfig) -> None:
         self.registered = True
@@ -41,6 +46,13 @@ class FakeHubClient:
 
     def update_message_response(self, message_id: str, response_text: str, *, completed: bool) -> None:
         self.response_updates.append((message_id, response_text, completed))
+        self.messages[message_id] = {
+            "message_id": message_id,
+            "status": MessageStatus.COMPLETED.value if completed else MessageStatus.WORKING.value,
+        }
+
+    def get_message(self, message_id: str) -> dict:
+        return self.messages.get(message_id, {"message_id": message_id, "status": MessageStatus.WORKING.value})
 
     def update_agent_context(self, short_id: str, context: str) -> None:
         self.context_updates.append((short_id, context))
@@ -70,9 +82,17 @@ class RecordingTmuxClient(StaticTmuxClient):
     def __init__(self, panes: list[TmuxPane]) -> None:
         super().__init__(panes)
         self.injections: list[tuple[str, str, bool]] = []
+        self.injection_result = InjectionResult(
+            pasted=True,
+            submit_requested=True,
+            submit_confirmed=True,
+            pending_input_detected=False,
+            attempts=1,
+        )
 
-    def inject_text(self, target: str, text: str, *, submit: bool) -> None:
+    def inject_text(self, target: str, text: str, *, submit: bool) -> InjectionResult:
         self.injections.append((target, text, submit))
+        return self.injection_result
 
 
 def test_relay_sync_marks_missing_pane_offline() -> None:
@@ -263,6 +283,54 @@ def test_relay_sync_does_not_mark_agent_error_for_terminal_ui_failure_text() -> 
     assert fake_hub.upserts == [("alice-codex-api", AgentStatus.IDLE)]
 
 
+def test_relay_sync_does_not_mark_live_agent_error_for_scrollback_diagnostics() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+            )
+        ],
+    )
+    fake_hub = FakeHubClient()
+    tmux = StaticTmuxClient(
+        [
+            TmuxPane(
+                target="dev:0.1",
+                pane_id="%1",
+                command="codex",
+                current_path="/workspace/api",
+                title="codex",
+                kind="codex",
+                pane_pid=None,
+            )
+        ]
+    )
+    tmux.captures["dev:0.1"] = "\n".join(
+        [
+            "error: aborted during AgentTalk repair",
+            "Traceback: diagnostic text from a command output",
+            "› Implement {feature}",
+            "  gpt-5.5 xhigh · /workspace/api",
+        ]
+    )
+
+    AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).sync_once()
+
+    assert detect_errors(tmux.captures["dev:0.1"])
+    assert tail_shows_live_agent_ui(tmux.captures["dev:0.1"])
+    assert fake_hub.upserts == [("alice-codex-api", AgentStatus.IDLE)]
+
+
 def test_build_injected_message_contains_marker() -> None:
     payload = build_injected_message(
         message_id="msg-1",
@@ -277,7 +345,50 @@ def test_build_injected_message_contains_marker() -> None:
     assert "from: alice" in payload
     assert "to: bob" in payload
     assert "Please review." in payload
+    assert "AGENTTALK_ACK:msg-1" in payload
     assert "<<<AGENTTALK_DONE:msg-1>>>" in payload
+
+
+def test_prepare_injected_message_keeps_short_message_inline(tmp_path) -> None:
+    payload = prepare_injected_message(
+        message_id="msg-1",
+        sender="alice",
+        target="bob",
+        body="Please review.\nFocus on errors.",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+        spool_dir=tmp_path,
+    )
+
+    assert "\n" not in payload
+    assert "Please review. Focus on errors." in payload
+    assert "AGENTTALK_ACK:msg-1" in payload
+    assert "Full task is stored" not in payload
+    assert "<<<AGENTTALK_DONE:msg-1>>>" in payload
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_prepare_injected_message_spools_long_multiline_message(tmp_path) -> None:
+    body = "\n".join(f"line {index}: please review this detail" for index in range(40))
+
+    payload = prepare_injected_message(
+        message_id="msg-long/1",
+        sender="alice",
+        target="bob",
+        body=body,
+        done_marker="<<<AGENTTALK_DONE:msg-long-1>>>",
+        spool_dir=tmp_path,
+    )
+
+    spool_files = list(tmp_path.iterdir())
+    assert len(spool_files) == 1
+    spooled = spool_files[0].read_text(encoding="utf-8")
+    assert body in spooled
+    assert "AGENTTALK_ACK:msg-long/1" in spooled
+    assert "<<<AGENTTALK_DONE:msg-long-1>>>" in spooled
+    assert "\n" not in payload
+    assert "Full task is stored at" in payload
+    assert body not in payload
+    assert str(spool_files[0]) in payload
 
 
 def test_relay_process_next_message_injects_auto_submit() -> None:
@@ -315,7 +426,54 @@ def test_relay_process_next_message_injects_auto_submit() -> None:
     assert processed is True
     assert tmux.injections[0][0] == "dev:0.1"
     assert tmux.injections[0][2] is True
-    assert fake_hub.status_updates == [("msg-1", MessageStatus.INJECTED, "")]
+    assert fake_hub.status_updates == [("msg-1", MessageStatus.SUBMITTED, "")]
+
+
+def test_relay_process_next_message_spools_long_body(monkeypatch, tmp_path) -> None:
+    import agenttalk.relay as relay_module
+
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+                receive_mode=ReceiveMode.AUTO_SUBMIT,
+            )
+        ],
+    )
+    body = "\n".join(f"review item {index}" for index in range(60))
+    fake_hub = FakeHubClient(
+        next_payload={
+            "message_id": "msg-long",
+            "sender": "bob",
+            "target": "alice-codex-api",
+            "body": body,
+            "done_marker": "<<<AGENTTALK_DONE:msg-long>>>",
+        }
+    )
+    tmux = RecordingTmuxClient([])
+    monkeypatch.setattr(relay_module, "default_message_spool_dir", lambda: tmp_path)
+
+    processed = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).process_next_message_once()
+
+    assert processed is True
+    injected = tmux.injections[0][1]
+    assert tmux.injections[0][2] is True
+    assert body not in injected
+    assert "\n" not in injected
+    spool_files = list(tmp_path.iterdir())
+    assert len(spool_files) == 1
+    assert body in spool_files[0].read_text(encoding="utf-8")
+    assert fake_hub.status_updates == [("msg-long", MessageStatus.SUBMITTED, "")]
 
 
 def test_relay_process_next_message_respects_paste_only() -> None:
@@ -356,6 +514,57 @@ def test_relay_process_next_message_respects_paste_only() -> None:
     assert fake_hub.status_updates == [("msg-1", MessageStatus.INJECTED_PASTE_ONLY, "")]
 
 
+def test_relay_process_next_message_records_submit_unconfirmed(tmp_path, monkeypatch) -> None:
+    import agenttalk.dlq as dlq_module
+    import agenttalk.relay as relay_module
+
+    dlq_path = tmp_path / "dlq.json"
+    monkeypatch.setattr(dlq_module, "default_dlq_path", lambda: dlq_path)
+    monkeypatch.setattr(relay_module, "record_dead_letter", dlq_module.record_dead_letter)
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+                receive_mode=ReceiveMode.AUTO_SUBMIT,
+            )
+        ],
+    )
+    fake_hub = FakeHubClient(
+        next_payload={
+            "message_id": "msg-1",
+            "sender": "bob",
+            "target": "alice-codex-api",
+            "body": "Please review.",
+            "done_marker": "<<<AGENTTALK_DONE:msg-1>>>",
+        }
+    )
+    tmux = RecordingTmuxClient([])
+    tmux.injection_result = InjectionResult(
+        pasted=True,
+        submit_requested=True,
+        submit_confirmed=False,
+        pending_input_detected=True,
+        attempts=5,
+    )
+
+    AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).process_next_message_once()
+
+    assert fake_hub.status_updates == [("msg-1", MessageStatus.SUBMIT_UNCONFIRMED, "")]
+    records = dlq_module.load_dead_letters(dlq_path)
+    assert records[0]["message_id"] == "msg-1"
+    assert records[0]["reason"] == "submit_unconfirmed"
+
+
 def test_relay_auto_submit_uses_injected_status() -> None:
     config = AgentTalkConfig(
         hub_url="http://hub.local:8787",
@@ -388,8 +597,45 @@ def test_relay_auto_submit_uses_injected_status() -> None:
 
     AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).process_next_message_once()
 
-    # Auto-submit deliveries keep the bare INJECTED status (Enter was sent).
-    assert fake_hub.status_updates == [("msg-1", MessageStatus.INJECTED, "")]
+    # Auto-submit deliveries become SUBMITTED only after the tmux driver
+    # confirms that Enter took effect.
+    assert fake_hub.status_updates == [("msg-1", MessageStatus.SUBMITTED, "")]
+
+
+def test_strip_agenttalk_ack_removes_ack_line() -> None:
+    acked, stripped = strip_agenttalk_ack(
+        "AGENTTALK_ACK:msg-1\nanswer\n<<<AGENTTALK_DONE:msg-1>>>\n",
+        "msg-1",
+    )
+
+    assert acked is True
+    assert stripped == "answer\n<<<AGENTTALK_DONE:msg-1>>>"
+
+
+def test_relay_watch_marks_acked_without_completion() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient([])
+    tmux.captures["dev:0.1"] = "before\nAGENTTALK_ACK:msg-1\n"
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
+    relay.watch_states["msg-1"] = WatchState(
+        target="dev:0.1",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+
+    relay.update_watches_once()
+
+    assert fake_hub.response_updates == [("msg-1", "", False)]
+    assert fake_hub.status_updates == [("msg-1", MessageStatus.ACKED, "")]
+    assert "msg-1" in relay.watch_states
 
 
 def test_relay_watch_detects_done_marker() -> None:
@@ -403,7 +649,7 @@ def test_relay_watch_detects_done_marker() -> None:
     )
     fake_hub = FakeHubClient()
     tmux = RecordingTmuxClient([])
-    tmux.captures["dev:0.1"] = "before\nanswer\n<<<AGENTTALK_DONE:msg-1>>>\n"
+    tmux.captures["dev:0.1"] = "before\nAGENTTALK_ACK:msg-1\nanswer\n<<<AGENTTALK_DONE:msg-1>>>\n"
     relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
     relay.watch_states["msg-1"] = WatchState(
         target="dev:0.1",
@@ -565,6 +811,37 @@ def test_relay_watch_rejects_echo_only_completion() -> None:
         "not be accepted as completion"
     )
     assert "msg-1" in relay.watch_states
+
+
+def test_relay_watch_does_not_downgrade_terminal_hub_status() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    fake_hub.messages["msg-1"] = {
+        "message_id": "msg-1",
+        "status": MessageStatus.COMPLETED.value,
+    }
+    tmux = RecordingTmuxClient([])
+    tmux.captures["dev:0.1"] = "before\nstill visible output\n"
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
+    relay.watch_states["msg-1"] = WatchState(
+        target="dev:0.1",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+
+    updates = relay.update_watches_once()
+
+    assert updates == 0
+    assert fake_hub.status_updates == []
+    assert fake_hub.response_updates == []
+    assert "msg-1" not in relay.watch_states
 
 
 def test_strip_injected_message_echo_leaves_normal_response_delta() -> None:

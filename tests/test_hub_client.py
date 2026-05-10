@@ -1,0 +1,37 @@
+from __future__ import annotations
+
+from agenttalk.hub.client import HubClient
+from agenttalk.hub.models import MessageStatus
+
+
+class FakeResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"status {self.status_code}")
+
+
+def test_update_message_status_falls_back_for_old_hub_enum(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_post(*_args, **kwargs) -> FakeResponse:
+        calls.append(kwargs["json"])
+        if len(calls) == 1:
+            return FakeResponse(422)
+        return FakeResponse(200)
+
+    import agenttalk.hub.client as client_module
+
+    monkeypatch.setattr(client_module.httpx, "post", fake_post)
+
+    HubClient("http://hub.local", "token").update_message_status(
+        "msg-1",
+        MessageStatus.SUBMITTED,
+    )
+
+    assert calls == [
+        {"status": "submitted", "error": ""},
+        {"status": "injected", "error": "compat fallback from submitted"},
+    ]

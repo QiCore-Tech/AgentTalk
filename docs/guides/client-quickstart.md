@@ -50,7 +50,7 @@ The script:
 
 1. saves local Hub config;
 2. registers exactly the tmux target you passed;
-3. starts `agenttalk daemon start`.
+3. starts the local relay. For long-running use, prefer `agenttalk daemon install`.
 
 For a one-time sync:
 
@@ -62,6 +62,33 @@ scripts/start-client.sh \
   --tmux-target dev:0.1 \
   --once
 ```
+
+## Reliable Relay Operations
+
+Use the managed supervisor for normal work:
+
+```bash
+agenttalk daemon install
+agenttalk daemon status
+agenttalk daemon restart
+agenttalk doctor
+```
+
+If a message cannot be confirmed as submitted, the relay records it in the local dead-letter queue:
+
+```bash
+agenttalk dlq list
+agenttalk dlq retry <message-id>
+agenttalk dlq fail <message-id> --reason "manual close"
+```
+
+Delivery states are:
+
+```text
+sent -> delivered -> submitted -> acked -> completed
+```
+
+`acked` means the target agent printed `AGENTTALK_ACK:<message-id>`.
 
 ## Safety
 

@@ -45,6 +45,10 @@ def help_reply() -> FeishuReply:
                 "【查看消息状态】",
                 "/status <message-id>  # 查看消息投递状态",
                 "/response <message-id> # 查看 agent 的回复内容",
+                "/trace <message-id>   # 查看投递证据链和响应预览",
+                "",
+                "【可靠投递说明】",
+                "/guide reliability    # 查看 ACK、daemon、DLQ、doctor 说明",
                 "",
                 "【Web 控制台】",
                 "访问 Web UI 获取更完整的 agent 管理功能",
@@ -139,9 +143,54 @@ def message_status_text(message: MessageResponse) -> FeishuReply:
         f"message: {message.message_id}",
         f"target: {message.target}",
         f"status: {message.status}",
+        f"updated_at: {message.updated_at}",
     ]
     if message.error:
         lines.append(f"error: {message.error}")
+    return text_reply("\n".join(lines))
+
+
+def reliability_guide_text() -> FeishuReply:
+    return text_reply(
+        "\n".join(
+            [
+                "AgentTalk 可靠投递说明：",
+                "",
+                "消息状态链：sent -> delivered -> submitted -> acked -> completed",
+                "- submitted: 本地 relay 已确认 Enter 生效",
+                "- acked: 目标 agent 已打印 AGENTTALK_ACK:<message-id>",
+                "- submit_unconfirmed: relay 发现文本可能仍停在输入框，需检查 DLQ",
+                "",
+                "Feishu 可用命令：",
+                "/status <message-id>",
+                "/response <message-id>",
+                "/trace <message-id>",
+                "",
+                "本地 relay 命令需要在目标开发机执行：",
+                "agenttalk doctor",
+                "agenttalk daemon status|restart|install|stop",
+                "agenttalk dlq list|retry|fail",
+            ]
+        )
+    )
+
+
+def message_trace_text(message: MessageResponse, response_text: str = "") -> FeishuReply:
+    lines = [
+        "AgentTalk message trace:",
+        f"message: {message.message_id}",
+        f"sender: {message.sender}",
+        f"target: {message.target}",
+        f"target_machine: {message.target_machine_id}",
+        f"status: {message.status}",
+        f"created_at: {message.created_at}",
+        f"updated_at: {message.updated_at}",
+        f"done_marker: {message.done_marker}",
+    ]
+    if message.error:
+        lines.append(f"error: {message.error}")
+    if response_text:
+        lines.extend(["", "response preview:", "```", truncate(response_text, 1200), "```"])
     return text_reply("\n".join(lines))
 
 

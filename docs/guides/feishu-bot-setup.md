@@ -24,6 +24,8 @@ After setup, users can chat with the Feishu bot:
 /send alice-codex-api 请检查接口契约
 /status msg-xxx
 /response msg-xxx
+/trace msg-xxx
+/guide reliability
 ```
 
 Expected deployment shape:
@@ -252,6 +254,54 @@ Expected:
 Expected:
 
 - Message status and response are returned.
+
+```text
+/trace <message-id>
+```
+
+Expected:
+
+- Message delivery trace is returned, including sender, target, target machine, status, timestamps, done marker, error if present, and response preview.
+
+```text
+/guide reliability
+```
+
+Expected:
+
+- Reliability guide is returned, including the delivery status chain and local relay commands.
+
+## Reliable Delivery Notes
+
+AgentTalk's local relay records a stronger delivery chain than the original MVP:
+
+```text
+sent -> delivered -> submitted -> acked -> completed
+```
+
+Status meanings:
+
+| Status | Meaning |
+|---|---|
+| `sent` | Hub accepted the message. |
+| `delivered` | Target relay claimed the message. |
+| `submitted` | Local relay confirmed that the tmux submit key took effect. |
+| `acked` | Target agent printed `AGENTTALK_ACK:<message-id>`. |
+| `completed` | Target agent printed the done marker and a response was captured. |
+| `submit_unconfirmed` | Local relay suspects the text is still in the input box. Check the target machine's DLQ. |
+
+Feishu can inspect Hub-visible message evidence with `/status`, `/response`, and `/trace`.
+It cannot directly run local machine commands such as `agenttalk daemon restart` or `agenttalk dlq retry`.
+Run those on the target developer machine:
+
+```bash
+agenttalk doctor
+agenttalk daemon status
+agenttalk daemon restart
+agenttalk dlq list
+agenttalk dlq retry <message-id>
+agenttalk dlq fail <message-id> --reason "manual close"
+```
 
 ## Troubleshooting
 

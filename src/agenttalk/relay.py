@@ -5,8 +5,10 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from agenttalk.config import AgentTalkConfig
+from agenttalk.dlq import record_dead_letter
 from agenttalk.hub.client import HubClient
 from agenttalk.hub.models import AgentHealthReport, AgentStatus, MessageStatus, ReceiveMode
 from agenttalk.process_manager import (
@@ -20,6 +22,9 @@ from agenttalk.process_manager import (
 TmuxClient = TmuxProcessManager
 TmuxPane = ManagedProcess
 logger = logging.getLogger(__name__)
+
+INLINE_INJECTION_MAX_CHARS = 1400
+INLINE_INJECTION_MAX_LINES = 8
 
 # Optional LLM-based status analysis
 try:
@@ -131,6 +136,23 @@ def detect_pause(output: str) -> list[str]:
     return list(set(found))
 
 
+def tail_shows_live_agent_ui(output: str) -> bool:
+    tail_lines = [line.strip() for line in output.splitlines()[-12:] if line.strip()]
+    if not tail_lines:
+        return False
+    tail = "\n".join(tail_lines)
+    live_markers = (
+        "› ",
+        "❯",
+        "gpt-",
+        "bypass permissions",
+        "esc to interrupt",
+        "Working (",
+        "evidence-based-code-review",
+    )
+    return any(marker in tail for marker in live_markers)
+
+
 def output_fingerprint(output: str) -> str:
     return hashlib.sha256(output.encode()).hexdigest()[:16]
 
@@ -206,7 +228,7 @@ class AgentTalkRelay:
             status = AgentStatus.CRASHED
         elif not process_alive:
             status = AgentStatus.CRASHED
-        elif detected_errors:
+        elif detected_errors and not tail_shows_live_agent_ui(recent_output):
             status = AgentStatus.ERROR
             state.consecutive_errors += 1
         elif state.last_output_fingerprint and current_fingerprint != state.last_output_fingerprint:
@@ -326,7 +348,7 @@ class AgentTalkRelay:
                 "Target binding not found on relay",
             )
             return True
-        payload = build_injected_message(
+        payload = prepare_injected_message(
             message_id=message["message_id"],
             sender=message["sender"],
             target=message["target"],
@@ -336,19 +358,32 @@ class AgentTalkRelay:
         submit = binding.receive_mode == ReceiveMode.AUTO_SUBMIT
         try:
             baseline = self.tmux_client.capture_output(binding.tmux_target, lines=500)
-            self.tmux_client.inject_text(
+            injection_result = self.tmux_client.inject_text(
                 binding.tmux_target,
                 payload,
                 submit=submit,
             )
         except Exception as exc:
             self.hub_client.update_message_status(message["message_id"], MessageStatus.FAILED, str(exc))
+            record_dead_letter(message=message, reason="inject_failed", error=str(exc))
             return True
         # Distinguish "fully delivered" (Enter pressed, agent has the message)
         # from "pasted but not submitted" (text sits in the input box, agent has
         # not seen it yet). Callers must NOT treat INJECTED_PASTE_ONLY as a
         # confirmed delivery; they should verify via context or follow up.
-        injected_status = MessageStatus.INJECTED if submit else MessageStatus.INJECTED_PASTE_ONLY
+        if not submit:
+            injected_status = MessageStatus.INJECTED_PASTE_ONLY
+        elif injection_result is not None and injection_result.submit_confirmed:
+            injected_status = MessageStatus.SUBMITTED
+        elif injection_result is not None and injection_result.pending_input_detected:
+            injected_status = MessageStatus.SUBMIT_UNCONFIRMED
+            record_dead_letter(
+                message=message,
+                reason="submit_unconfirmed",
+                error=f"submit attempts: {injection_result.attempts}",
+            )
+        else:
+            injected_status = MessageStatus.INJECTED
         self.hub_client.update_message_status(message["message_id"], injected_status)
         self.watch_states[message["message_id"]] = WatchState(
             target=binding.tmux_target,
@@ -361,11 +396,23 @@ class AgentTalkRelay:
         completed: list[str] = []
         updates = 0
         for message_id, state in list(self.watch_states.items()):
+            try:
+                current_message = self.hub_client.get_message(message_id)
+            except Exception:
+                current_message = None
+            if current_message and current_message.get("status") in {
+                MessageStatus.COMPLETED.value,
+                MessageStatus.FAILED.value,
+                MessageStatus.TIMEOUT.value,
+            }:
+                completed.append(message_id)
+                continue
             output = self.tmux_client.capture_output(state.target, lines=800)
             delta = output_delta(state.baseline, output)
             if not delta:
                 continue
             response_delta = strip_injected_message_echo(delta, state.done_marker)
+            acked, response_delta = strip_agenttalk_ack(response_delta, message_id)
             # Stricter completion check: the marker must appear on its own line
             # (allowing leading/trailing whitespace) AND there must be non-empty
             # response content before the marker. This rejects two failure
@@ -378,6 +425,8 @@ class AgentTalkRelay:
             self.hub_client.update_message_response(message_id, response_text, completed=done)
             if done:
                 completed.append(message_id)
+            elif acked:
+                self.hub_client.update_message_status(message_id, MessageStatus.ACKED)
             else:
                 self.hub_client.update_message_status(message_id, MessageStatus.WORKING)
             updates += 1
@@ -409,6 +458,82 @@ class StaticTmuxClient(TmuxProcessManager):
         return self.captures.get(target, "")
 
 
+def default_message_spool_dir() -> Path:
+    return Path.home() / ".agenttalk" / "inbox"
+
+
+def _safe_spool_filename(message_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", message_id).strip("._")
+    return f"{safe or 'message'}.md"
+
+
+def _collapse_for_inline(text: str, *, limit: int = 900) -> str:
+    collapsed = " ".join(text.strip().split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3].rstrip() + "..."
+
+
+def _should_spool_message(body: str) -> bool:
+    return (
+        len(body) > INLINE_INJECTION_MAX_CHARS
+        or len(body.splitlines()) > INLINE_INJECTION_MAX_LINES
+    )
+
+
+def prepare_injected_message(
+    *,
+    message_id: str,
+    sender: str,
+    target: str,
+    body: str,
+    done_marker: str,
+    spool_dir: Path | None = None,
+) -> str:
+    """Build the tmux payload.
+
+    Long, highly multiline prompts are fragile in Codex/Claude TUIs: the paste
+    can remain in the editor and submit keys may turn into extra blank lines.
+    Keep the terminal injection compact and spill the full task to a local file
+    when needed. The Hub still stores the full message body.
+    """
+
+    if not _should_spool_message(body):
+        task = _collapse_for_inline(body)
+        return (
+            f"[AgentTalk Message] message_id: {message_id} from: {sender} to: {target}. "
+            f"Task: {task} "
+            "First print this exact acknowledgement on its own line: "
+            f"AGENTTALK_ACK:{message_id}. "
+            "When done, print this exact marker on its own line: "
+            f"{done_marker}"
+        )
+
+    resolved_spool_dir = spool_dir or default_message_spool_dir()
+    resolved_spool_dir.mkdir(parents=True, exist_ok=True)
+    spool_path = resolved_spool_dir / _safe_spool_filename(message_id)
+    full_message = build_injected_message(
+        message_id=message_id,
+        sender=sender,
+        target=target,
+        body=body,
+        done_marker=done_marker,
+    )
+    spool_path.write_text(full_message, encoding="utf-8")
+    digest = hashlib.sha256(full_message.encode("utf-8")).hexdigest()[:16]
+    preview = _collapse_for_inline(body, limit=240)
+    return (
+        f"[AgentTalk Message] message_id: {message_id} from: {sender} to: {target}. "
+        f"Full task is stored at {spool_path} (sha256:{digest}). "
+        "Read that file first, then perform the task. "
+        f"Preview: {preview} "
+        "First print this exact acknowledgement on its own line: "
+        f"AGENTTALK_ACK:{message_id}. "
+        "When done, print this exact marker on its own line: "
+        f"{done_marker}"
+    )
+
+
 def build_injected_message(*, message_id: str, sender: str, target: str, body: str, done_marker: str) -> str:
     return "\n".join(
         [
@@ -419,6 +544,9 @@ def build_injected_message(*, message_id: str, sender: str, target: str, body: s
             "",
             "Task:",
             body.strip(),
+            "",
+            "First print this exact acknowledgement on its own line:",
+            f"AGENTTALK_ACK:{message_id}",
             "",
             "When done, print this exact marker on its own line:",
             done_marker,
@@ -454,6 +582,18 @@ def strip_injected_message_echo(delta: str, done_marker: str) -> str:
     if marker_index < 0:
         return delta
     return delta[marker_index + len(done_marker) :].lstrip()
+
+
+def strip_agenttalk_ack(response_delta: str, message_id: str) -> tuple[bool, str]:
+    ack_line = f"AGENTTALK_ACK:{message_id}"
+    acked = False
+    kept_lines: list[str] = []
+    for line in response_delta.splitlines():
+        if line.strip() == ack_line:
+            acked = True
+            continue
+        kept_lines.append(line)
+    return acked, "\n".join(kept_lines).lstrip()
 
 
 def _evaluate_done_marker(response_delta: str, done_marker: str) -> tuple[bool, str]:

@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+SUBMIT_INITIAL_DELAY_SECONDS = 0.4
+SUBMIT_RETRY_DELAY_SECONDS = 0.35
+SUBMIT_MAX_ATTEMPTS = 5
+
 
 @dataclass(frozen=True)
 class ManagedProcess:
@@ -21,6 +25,15 @@ class ManagedProcess:
     title: str  # 标题/描述
     kind: str  # agent 类型
     pane_pid: int | None  # 进程 PID
+
+
+@dataclass(frozen=True)
+class InjectionResult:
+    pasted: bool
+    submit_requested: bool
+    submit_confirmed: bool
+    pending_input_detected: bool
+    attempts: int = 0
 
 
 class ProcessManager(abc.ABC):
@@ -35,7 +48,7 @@ class ProcessManager(abc.ABC):
         """获取目标进程的 PID。"""
 
     @abc.abstractmethod
-    def inject_text(self, target: str, text: str, *, submit: bool) -> None:
+    def inject_text(self, target: str, text: str, *, submit: bool) -> InjectionResult | None:
         """向目标进程注入文本。"""
 
     @abc.abstractmethod
@@ -109,7 +122,7 @@ class TmuxProcessManager(ProcessManager):
         except (ValueError, IndexError):
             return None
 
-    def inject_text(self, target: str, text: str, *, submit: bool) -> None:
+    def inject_text(self, target: str, text: str, *, submit: bool) -> InjectionResult:
         buffer_name = f"agenttalk-{os.getpid()}-{time.time_ns()}"
         load = subprocess.run(
             ["tmux", "load-buffer", "-b", buffer_name, "-"],
@@ -136,21 +149,39 @@ class TmuxProcessManager(ProcessManager):
                 capture_output=True,
                 check=False,
             )
-        if submit:
-            self._submit_with_fallback(target)
+        if not submit:
+            return InjectionResult(
+                pasted=True,
+                submit_requested=False,
+                submit_confirmed=False,
+                pending_input_detected=True,
+                attempts=0,
+            )
+        submit_confirmed, pending_input_detected, attempts = self._submit_once(target)
+        return InjectionResult(
+            pasted=True,
+            submit_requested=True,
+            submit_confirmed=submit_confirmed,
+            pending_input_detected=pending_input_detected,
+            attempts=attempts,
+        )
 
-    def _submit_with_fallback(self, target: str) -> None:
-        """Submit pasted input and retry with equivalent submit keys if idle.
+    def _submit_once(self, target: str) -> tuple[bool, bool, int]:
+        """Submit pasted input, retrying only when the prompt still looks pending.
 
-        Claude/Codex-style TUIs sometimes leave large multiline pastes in the
-        editor after a single Enter. Enter, C-m, and C-j are accepted by
-        different terminal input stacks, so try them in order and stop early
-        when the pane shows active agent work.
+        Codex/Claude TUIs can need a short beat after a tmux paste before Enter
+        is interpreted as "submit" rather than another editor keystroke. This is
+        most visible for long AgentTalk messages, where the input box keeps the
+        pasted prompt and humans have to press Enter again. We therefore delay
+        the first submit slightly and only send follow-up Enter keys when the
+        terminal tail still appears to contain an unsubmitted AgentTalk prompt.
         """
 
-        for key in ("Enter", "C-m", "C-j"):
+        time.sleep(SUBMIT_INITIAL_DELAY_SECONDS)
+        for attempt in range(SUBMIT_MAX_ATTEMPTS):
+            attempt_count = attempt + 1
             submit = subprocess.run(
-                ["tmux", "send-keys", "-t", target, key],
+                ["tmux", "send-keys", "-t", target, "Enter"],
                 text=True,
                 capture_output=True,
                 check=False,
@@ -158,7 +189,22 @@ class TmuxProcessManager(ProcessManager):
             if submit.returncode != 0:
                 raise RuntimeError(submit.stderr.strip() or "tmux submit failed")
             if self._wait_for_active_submission(target):
-                return
+                return True, False, attempt_count
+            if attempt + 1 >= SUBMIT_MAX_ATTEMPTS:
+                break
+            try:
+                output = self.capture_output(target, lines=80)
+            except Exception:
+                return False, False, attempt_count
+            pending_input = _tail_shows_pending_agenttalk_input(output)
+            if not pending_input:
+                return True, False, attempt_count
+            time.sleep(SUBMIT_RETRY_DELAY_SECONDS)
+        try:
+            output = self.capture_output(target, lines=80)
+        except Exception:
+            return False, False, SUBMIT_MAX_ATTEMPTS
+        return False, _tail_shows_pending_agenttalk_input(output), SUBMIT_MAX_ATTEMPTS
 
     def _wait_for_active_submission(self, target: str, *, timeout: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -292,7 +338,7 @@ class SubprocessProcessManager(ProcessManager):
                 pass
         return None
 
-    def inject_text(self, target: str, text: str, *, submit: bool) -> None:
+    def inject_text(self, target: str, text: str, *, submit: bool) -> InjectionResult:
         # Windows 下通过 stdin 注入
         proc = self._procs.get(target)
         if proc is None:
@@ -312,6 +358,13 @@ class SubprocessProcessManager(ProcessManager):
         if submit:
             proc.stdin.write(os.linesep)
         proc.stdin.flush()
+        return InjectionResult(
+            pasted=True,
+            submit_requested=submit,
+            submit_confirmed=submit,
+            pending_input_detected=not submit,
+            attempts=1 if submit else 0,
+        )
 
     def capture_output(self, target: str, *, lines: int = 300) -> str:
         log_file = self._log_path(target)
@@ -387,6 +440,63 @@ def _tail_shows_active_agent_submission(output: str) -> bool:
         if any(status in line for status in active_statuses):
             return True
     return False
+
+
+def _tail_shows_pending_agenttalk_input(output: str) -> bool:
+    """Return True when the bottom of a pane still looks like unsent input.
+
+    This intentionally looks only at the terminal tail. Submitted prompts are
+    often echoed into scrollback, so seeing an AgentTalk marker anywhere is not
+    enough. We only retry when the marker is close to the bottom and there is no
+    evidence that the agent has started or completed a response after it.
+    """
+
+    tail_lines = output.splitlines()[-30:]
+    if not tail_lines:
+        return False
+
+    marker_index: int | None = None
+    markers = (
+        "[AgentTalk Message]",
+        "[Pasted Content",
+        "Full task is stored at",
+        "message_id:",
+        "<<<AGENTTALK_DONE:",
+    )
+    for index, line in enumerate(tail_lines):
+        if any(marker in line for marker in markers):
+            marker_index = index
+    if marker_index is None:
+        return False
+
+    # Old scrollback should not trigger another Enter.
+    if marker_index < max(len(tail_lines) - 12, 0):
+        return False
+
+    after_marker = tail_lines[marker_index + 1 :]
+    response_indicators = (
+        "<<<AGENTTALK_DONE:",
+        "• ",
+        "● ",
+        "Ran ",
+        "Explored",
+        "Edited",
+        "Findings:",
+        "Verdict:",
+        "ACCEPT",
+        "CONDITIONAL_ACCEPT",
+        "REVISE",
+    )
+    if any(any(indicator in line for indicator in response_indicators) for line in after_marker):
+        return False
+    if _tail_shows_active_agent_submission("\n".join(tail_lines)):
+        return False
+
+    prompt_window = tail_lines[max(marker_index - 2, 0) : marker_index + 1]
+    if any(line.lstrip().startswith(("›", ">")) for line in prompt_window):
+        return True
+    # Wrapped input can push the prompt glyph above the captured marker line.
+    return marker_index >= len(tail_lines) - 4
 
 
 def is_process_alive(pid: int) -> bool:

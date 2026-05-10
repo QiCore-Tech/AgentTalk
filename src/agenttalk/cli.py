@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import os
+import shutil
+import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Annotated
@@ -9,10 +13,11 @@ import httpx
 import typer
 import uvicorn
 
-from agenttalk.config import AgentBinding, AgentTalkConfig, load_config, save_config, upsert_binding
+from agenttalk.config import AgentBinding, load_config, save_config, upsert_binding
+from agenttalk.dlq import load_dead_letters, mark_dead_letter
 from agenttalk.hub.client import HubClient
 from agenttalk.hub.app import create_app
-from agenttalk.hub.models import ReceiveMode
+from agenttalk.hub.models import MessageStatus, ReceiveMode
 from agenttalk.hub.settings import HubSettings, default_database_path
 from agenttalk.relay import AgentTalkRelay
 from agenttalk.process_manager import get_process_manager
@@ -22,9 +27,124 @@ app = typer.Typer(help="AgentTalk CLI.")
 hub_app = typer.Typer(help="Run and manage the AgentTalk Hub.")
 daemon_app = typer.Typer(help="Run the local AgentTalk relay.")
 config_app = typer.Typer(help="Manage Hub configuration.")
+dlq_app = typer.Typer(help="Inspect and retry local dead-lettered deliveries.")
 app.add_typer(hub_app, name="hub")
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(config_app, name="config")
+app.add_typer(dlq_app, name="dlq")
+
+
+def default_daemon_pid_path() -> Path:
+    return Path.home() / ".agenttalk" / "daemon.pid"
+
+
+def default_daemon_log_path() -> Path:
+    return Path.home() / ".agenttalk" / "relay.log"
+
+
+def default_daemon_stop_path() -> Path:
+    return Path.home() / ".agenttalk" / "daemon.stop"
+
+
+def _read_pid(path: Path | None = None) -> int | None:
+    resolved = path or default_daemon_pid_path()
+    try:
+        return int(resolved.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _pid_alive(pid: int | None) -> bool:
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _find_daemon_pids() -> list[int]:
+    patterns = [
+        "agenttalk daemon start",
+        "agenttalk daemon supervise",
+        "uv run --no-sync agenttalk daemon start",
+    ]
+    current = os.getpid()
+    found: set[int] = set()
+    for pattern in patterns:
+        proc = subprocess.run(["pgrep", "-f", pattern], text=True, capture_output=True, check=False)
+        for raw in proc.stdout.splitlines():
+            try:
+                pid = int(raw.strip())
+            except ValueError:
+                continue
+            if pid != current:
+                found.add(pid)
+    return sorted(pid for pid in found if _pid_alive(pid))
+
+
+def _agenttalk_executable() -> str:
+    return shutil.which("agenttalk") or sys.argv[0]
+
+
+def _stop_daemon_process(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.2)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def _start_daemon_supervisor(*, config_path: Path | None, interval: float) -> int:
+    pid_path = default_daemon_pid_path()
+    existing_pid = _read_pid(pid_path)
+    if _pid_alive(existing_pid):
+        return int(existing_pid)
+    unmanaged = [pid for pid in _find_daemon_pids() if pid != existing_pid]
+    if unmanaged:
+        raise RuntimeError(
+            "existing unmanaged AgentTalk daemon process found: "
+            + ", ".join(str(pid) for pid in unmanaged)
+            + ". Run `agenttalk daemon restart` to replace it."
+        )
+    default_daemon_stop_path().unlink(missing_ok=True)
+    log_path = default_daemon_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        _agenttalk_executable(),
+        "daemon",
+        "supervise",
+        "--interval",
+        str(interval),
+    ]
+    if config_path is not None:
+        cmd.extend(["--config-path", str(config_path)])
+    with log_path.open("ab") as log_file:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(f"{proc.pid}\n", encoding="utf-8")
+    return proc.pid
 
 
 def resolve_token(token: str | None) -> str:
@@ -477,6 +597,80 @@ def watch_message(*, message_id: str, resolved_hub_url: str, resolved_token: str
     typer.echo("[timeout]")
 
 
+@dlq_app.command("list")
+def dlq_list(
+    all_records: Annotated[bool, typer.Option("--all", help="Show resolved records too.")] = False,
+    path: Annotated[Path | None, typer.Option(help="Dead-letter JSON path.")] = None,
+) -> None:
+    records = load_dead_letters(path)
+    if not all_records:
+        records = [record for record in records if record.get("status") == "open"]
+    if not records:
+        typer.echo("No dead-lettered messages.")
+        return
+    typer.echo(f"{'message id':28} {'status':10} {'reason':20} target")
+    for record in records:
+        typer.echo(
+            f"{str(record.get('message_id', ''))[:28]:28} "
+            f"{str(record.get('status', ''))[:10]:10} "
+            f"{str(record.get('reason', ''))[:20]:20} "
+            f"{record.get('target', '')}"
+        )
+
+
+@dlq_app.command("retry")
+def dlq_retry(
+    message_id: str,
+    hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
+    token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+    path: Annotated[Path | None, typer.Option(help="Dead-letter JSON path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    resolved_token = token or config.token or os.environ.get("AGENTTALK_TOKEN")
+    if not resolved_token:
+        raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
+    resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    response = httpx.post(
+        f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}/status",
+        headers=auth_headers(resolved_token),
+        json={"status": MessageStatus.SENT.value, "error": ""},
+        timeout=10,
+    )
+    if response.status_code >= 400:
+        typer.echo(response.text, err=True)
+        raise typer.Exit(1)
+    mark_dead_letter(message_id, status="retried", note="requeued via agenttalk dlq retry", path=path)
+    typer.echo(f"Requeued message: {message_id}")
+
+
+@dlq_app.command("fail")
+def dlq_fail(
+    message_id: str,
+    reason: Annotated[str, typer.Option(help="Failure note.")] = "manually failed from DLQ",
+    hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
+    token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+    path: Annotated[Path | None, typer.Option(help="Dead-letter JSON path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    resolved_token = token or config.token or os.environ.get("AGENTTALK_TOKEN")
+    if not resolved_token:
+        raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
+    resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    response = httpx.post(
+        f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}/status",
+        headers=auth_headers(resolved_token),
+        json={"status": MessageStatus.FAILED.value, "error": reason},
+        timeout=10,
+    )
+    if response.status_code >= 400:
+        typer.echo(response.text, err=True)
+        raise typer.Exit(1)
+    mark_dead_letter(message_id, status="failed", note=reason, path=path)
+    typer.echo(f"Marked failed: {message_id}")
+
+
 @app.command("auto-resume")
 def config_auto_resume(
     short_id: str,
@@ -544,3 +738,123 @@ def daemon_start(
         typer.echo(f"Synced {result.upserted} agents ({result.online} online, {result.offline} offline).")
         return
     relay.run_forever(interval_seconds=interval)
+
+
+@daemon_app.command("supervise", hidden=True)
+def daemon_supervise(
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 5.0,
+    restart_delay: Annotated[float, typer.Option(help="Restart delay seconds.")] = 2.0,
+) -> None:
+    stop_path = default_daemon_stop_path()
+    log_path = default_daemon_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [_agenttalk_executable(), "daemon", "start", "--interval", str(interval)]
+    if config_path is not None:
+        cmd.extend(["--config-path", str(config_path)])
+    while not stop_path.exists():
+        with log_path.open("ab") as log_file:
+            child = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+            child.wait()
+            if stop_path.exists():
+                break
+            log_file.write(
+                f"\n[agenttalk-supervisor] child exited {child.returncode}; restarting in {restart_delay}s\n".encode()
+            )
+            log_file.flush()
+        time.sleep(restart_delay)
+    stop_path.unlink(missing_ok=True)
+
+
+@daemon_app.command("status")
+def daemon_status() -> None:
+    pid = _read_pid()
+    if _pid_alive(pid):
+        typer.echo(f"AgentTalk daemon supervisor running: pid={pid}")
+        typer.echo(f"log: {default_daemon_log_path()}")
+        return
+    unmanaged = _find_daemon_pids()
+    if unmanaged:
+        typer.echo("AgentTalk daemon running without supervisor pidfile: " + ", ".join(str(pid) for pid in unmanaged))
+        typer.echo("Run `agenttalk daemon restart` to replace it with the managed supervisor.")
+        return
+    typer.echo("AgentTalk daemon supervisor is not running.")
+    raise typer.Exit(1)
+
+
+@daemon_app.command("stop")
+def daemon_stop() -> None:
+    pid = _read_pid()
+    stopped: list[int] = []
+    if not _pid_alive(pid):
+        for unmanaged_pid in _find_daemon_pids():
+            _stop_daemon_process(unmanaged_pid)
+            stopped.append(unmanaged_pid)
+        if not stopped:
+            typer.echo("AgentTalk daemon supervisor is not running.")
+        else:
+            typer.echo("Stopped unmanaged AgentTalk daemon process(es): " + ", ".join(str(item) for item in stopped))
+        default_daemon_pid_path().unlink(missing_ok=True)
+        return
+    default_daemon_stop_path().parent.mkdir(parents=True, exist_ok=True)
+    default_daemon_stop_path().write_text("stop\n", encoding="utf-8")
+    _stop_daemon_process(int(pid))
+    default_daemon_pid_path().unlink(missing_ok=True)
+    typer.echo(f"Stopped AgentTalk daemon supervisor: pid={pid}")
+
+
+@daemon_app.command("restart")
+def daemon_restart(
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 5.0,
+) -> None:
+    pid = _read_pid()
+    if _pid_alive(pid):
+        default_daemon_stop_path().write_text("stop\n", encoding="utf-8")
+        _stop_daemon_process(int(pid))
+    for unmanaged_pid in _find_daemon_pids():
+        if unmanaged_pid != pid:
+            _stop_daemon_process(unmanaged_pid)
+    default_daemon_pid_path().unlink(missing_ok=True)
+    new_pid = _start_daemon_supervisor(config_path=config_path, interval=interval)
+    typer.echo(f"Started AgentTalk daemon supervisor: pid={new_pid}")
+    typer.echo(f"log: {default_daemon_log_path()}")
+
+
+@daemon_app.command("install")
+def daemon_install(
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 5.0,
+) -> None:
+    pid = _start_daemon_supervisor(config_path=config_path, interval=interval)
+    typer.echo(f"AgentTalk daemon supervisor installed/running: pid={pid}")
+    typer.echo(f"log: {default_daemon_log_path()}")
+
+
+@app.command("doctor")
+def doctor(
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    typer.echo(f"config: {config_path or Path.home() / '.agenttalk' / 'config.json'}")
+    typer.echo(f"hub: {config.hub_url or '(unset)'}")
+    if not config.token:
+        typer.echo("token: missing")
+    else:
+        typer.echo("token: present")
+    pid = _read_pid()
+    typer.echo(f"daemon: {'running' if _pid_alive(pid) else 'not running'}" + (f" pid={pid}" if _pid_alive(pid) else ""))
+    if config.token:
+        try:
+            response = httpx.get(f"{config.hub_url.rstrip('/')}/health", timeout=5)
+            typer.echo(f"hub health: {response.status_code}")
+        except Exception as exc:
+            typer.echo(f"hub health: failed ({exc})")
+    typer.echo(f"local bindings: {len(config.agents)}")
+    for binding in config.agents:
+        typer.echo(f"  {binding.short_id}: {binding.kind} {binding.tmux_target} {binding.receive_mode.value}")

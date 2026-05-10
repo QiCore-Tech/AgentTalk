@@ -35,3 +35,17 @@ def test_parse_unknown_command() -> None:
 
     assert command.kind == FeishuCommandKind.UNKNOWN
     assert command.error == "Unknown command: /nope"
+
+
+def test_parse_trace_command() -> None:
+    command = parse_command("/trace msg-1")
+
+    assert command.kind == FeishuCommandKind.TRACE
+    assert command.args == ("msg-1",)
+
+
+def test_parse_guide_command() -> None:
+    command = parse_command("/guide reliability")
+
+    assert command.kind == FeishuCommandKind.GUIDE
+    assert command.args == ("reliability",)

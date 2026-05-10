@@ -6,6 +6,13 @@ from agenttalk.config import AgentBinding, AgentTalkConfig
 from agenttalk.hub.models import AgentHealthReport, AgentStatus, MessageStatus
 
 
+STATUS_COMPAT_FALLBACKS = {
+    MessageStatus.SUBMITTED: MessageStatus.INJECTED,
+    MessageStatus.ACKED: MessageStatus.WORKING,
+    MessageStatus.SUBMIT_UNCONFIRMED: MessageStatus.INJECTED,
+}
+
+
 class HubClient:
     def __init__(self, hub_url: str, token: str) -> None:
         self.hub_url = hub_url.rstrip("/")
@@ -80,6 +87,15 @@ class HubClient:
             json={"status": status.value, "error": error},
             timeout=10,
         )
+        if response.status_code == 422 and status in STATUS_COMPAT_FALLBACKS:
+            fallback = STATUS_COMPAT_FALLBACKS[status]
+            compat_error = error or f"compat fallback from {status.value}"
+            response = httpx.post(
+                f"{self.hub_url}/api/messages/{message_id}/status",
+                headers=self.headers,
+                json={"status": fallback.value, "error": compat_error},
+                timeout=10,
+            )
         response.raise_for_status()
 
     def update_message_response(self, message_id: str, response_text: str, *, completed: bool) -> None:
