@@ -645,8 +645,8 @@ agenttalk register --short-id my-claude --tmux-target "main" --owner "your-name"
 # 方式 2：使用项目路径作为标识
 agenttalk register --short-id api-agent --tmux-target "project-api" --workspace "C:\\Users\\you\\projects\\api"
 
-# 启动 relay
-agenttalk daemon start`}
+# 启动受守护的 relay
+agenttalk daemon install`}
         </pre>
 
         <p><strong>注意事项：</strong></p>
@@ -722,11 +722,33 @@ agenttalk register \\
   --kind codex \\
   --workspace /path/to/project
 
-# 启动 relay
-agenttalk daemon start`}
+# 启动受守护的 relay
+agenttalk daemon install`}
         </pre>
 
-        <h3>6. Agent 间协作（Skill）</h3>
+        <h3>6. 可靠投递与故障恢复</h3>
+        <p>AgentTalk 会跟踪 <code>sent</code>、<code>delivered</code>、<code>submitted</code>、<code>acked</code>、<code>completed</code> 状态。<code>submitted</code> 表示本地 relay 确认 Enter 生效，<code>acked</code> 表示目标 agent 已打印 <code>AGENTTALK_ACK:&lt;message-id&gt;</code>。</p>
+        <pre className="codeBlock">
+{`# 本地 relay 健康检查
+agenttalk doctor
+agenttalk daemon status
+agenttalk daemon restart
+
+# 处理未确认投递
+agenttalk dlq list
+agenttalk dlq retry <message-id>
+agenttalk dlq fail <message-id> --reason "manual close"`}
+        </pre>
+
+        <p>飞书机器人可以查看远程消息证据链；本地 daemon 和 DLQ 命令需要在目标开发机执行。</p>
+        <pre className="codeBlock">
+{`/status <message-id>
+/response <message-id>
+/trace <message-id>
+/guide reliability`}
+        </pre>
+
+        <h3>7. Agent 间协作（Skill）</h3>
         <p>AgentTalk 支持 AI agent 之间直接通信。将 Skill 文件放在您的 agent 配置目录中即可启用。</p>
 
         <pre className="codeBlock">
@@ -1179,7 +1201,7 @@ function LiveTerminal({ agent }: { agent: Agent }) {
         if (ref.current && ref.current.offsetWidth > 0 && ref.current.offsetHeight > 0) {
           fitAddon.fit()
         }
-      } catch (e) {
+      } catch {
         // Silently ignore fit errors when terminal isn't ready
       }
     }

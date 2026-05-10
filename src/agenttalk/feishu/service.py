@@ -8,7 +8,9 @@ from agenttalk.feishu.render import (
     agent_detail_card,
     agents_card,
     help_reply,
+    message_trace_text,
     message_status_text,
+    reliability_guide_text,
     text_reply,
     truncate,
 )
@@ -89,6 +91,18 @@ class FeishuAgentTalkService:
                 if response is None:
                     return text_reply(f"Message not found: {message_id}")
                 return text_reply(truncate(response.response_text or "No response captured.", 4000))
+            case FeishuCommandKind.TRACE:
+                message_id = command.args[0]
+                message = self.store.get_message(message_id)
+                if message is None:
+                    return text_reply(f"Message not found: {message_id}")
+                response = self.store.get_message_response(message_id)
+                return message_trace_text(message, response.response_text if response else "")
+            case FeishuCommandKind.GUIDE:
+                topic = command.args[0].lower() if command.args else ""
+                if topic in {"", "reliability", "delivery"}:
+                    return reliability_guide_text()
+                return help_reply()
             case FeishuCommandKind.UNKNOWN:
                 return help_reply()
             case _:

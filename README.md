@@ -189,6 +189,43 @@ agenttalk send --to alice-codex-api \
   --message "请检查 docs/api.md" --watch
 ```
 
+### 可靠投递与故障恢复
+
+AgentTalk 的 P0 可靠性链路包括：
+
+- 消息状态链：`sent -> delivered -> submitted -> acked -> completed`
+- `submitted` 表示本地 relay 已确认 Enter 生效，不只是把文本粘贴进输入框
+- `acked` 表示目标 agent 已打印 `AGENTTALK_ACK:<message-id>`，确认任务已被 agent 看到
+- `submit_unconfirmed` 表示 relay 怀疑消息仍停在输入框，需检查 DLQ
+- 长消息默认写入本地 inbox 文件，tmux 只注入短指令，降低 Codex/Claude TUI 粘贴失败风险
+
+本地 relay 管理：
+
+```bash
+agenttalk doctor
+agenttalk daemon install
+agenttalk daemon status
+agenttalk daemon restart
+agenttalk daemon stop
+```
+
+死信队列：
+
+```bash
+agenttalk dlq list
+agenttalk dlq retry <message-id>
+agenttalk dlq fail <message-id> --reason "manual close"
+```
+
+飞书机器人可查看投递证据链，但不能直接控制开发机本地 daemon：
+
+```text
+/status <message-id>
+/response <message-id>
+/trace <message-id>
+/guide reliability
+```
+
 #### 消息格式建议
 
 Agent 间通信应使用清晰的任务描述：
@@ -255,6 +292,32 @@ Discover local tmux panes read-only:
 
 ```bash
 scripts/start-client.sh --discover
+```
+
+### Reliable Delivery
+
+AgentTalk now tracks delivery through `sent -> delivered -> submitted -> acked -> completed`.
+`submitted` means the local relay confirmed that Enter took effect; `acked` means the target agent printed `AGENTTALK_ACK:<message-id>`.
+If submit cannot be confirmed, the message is marked `submit_unconfirmed` and recorded in the local dead-letter queue.
+
+Local relay operations:
+
+```bash
+agenttalk doctor
+agenttalk daemon install
+agenttalk daemon status
+agenttalk daemon restart
+agenttalk dlq list
+agenttalk dlq retry <message-id>
+```
+
+Feishu bot equivalents for remote inspection:
+
+```text
+/status <message-id>
+/response <message-id>
+/trace <message-id>
+/guide reliability
 ```
 
 ### Main Docs

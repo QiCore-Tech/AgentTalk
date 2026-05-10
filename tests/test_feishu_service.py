@@ -88,3 +88,26 @@ def test_response_command_returns_captured_response(tmp_path: Path) -> None:
     reply = service.handle(parse_command(f"/response {message_id}"), FeishuOperator(open_id="ou_123"))
 
     assert reply.content == "done"
+
+
+def test_trace_command_returns_message_trace(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    service = FeishuAgentTalkService(store)
+    created = service.handle(parse_command("/send alice-codex-api body"), FeishuOperator(open_id="ou_123"))
+    message_id = str(created.content).splitlines()[1].removeprefix("message: ")
+    response = store.update_message_response(message_id, MessageResponseUpdateRequest(response_text="done", completed=True))
+    assert response is not None
+
+    reply = service.handle(parse_command(f"/trace {message_id}"), FeishuOperator(open_id="ou_123"))
+
+    assert "AgentTalk message trace:" in str(reply.content)
+    assert f"message: {message_id}" in str(reply.content)
+    assert "response preview:" in str(reply.content)
+
+
+def test_guide_reliability_command_returns_local_relay_guidance(tmp_path: Path) -> None:
+    reply = handle(tmp_path, "/guide reliability")
+
+    assert "AgentTalk 可靠投递说明" in str(reply.content)
+    assert "agenttalk doctor" in str(reply.content)
+    assert "agenttalk dlq list" in str(reply.content)

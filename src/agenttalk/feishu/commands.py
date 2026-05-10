@@ -12,6 +12,8 @@ class FeishuCommandKind(StrEnum):
     SEND = "send"
     STATUS = "status"
     RESPONSE = "response"
+    TRACE = "trace"
+    GUIDE = "guide"
     UNKNOWN = "unknown"
 
 
@@ -55,4 +57,10 @@ def parse_command(text: str) -> FeishuCommand:
         if not rest:
             return FeishuCommand(FeishuCommandKind.RESPONSE, rest, raw, "Usage: /response <message-id>")
         return FeishuCommand(FeishuCommandKind.RESPONSE, rest, raw)
+    if name == "trace":
+        if not rest:
+            return FeishuCommand(FeishuCommandKind.TRACE, rest, raw, "Usage: /trace <message-id>")
+        return FeishuCommand(FeishuCommandKind.TRACE, rest, raw)
+    if name == "guide":
+        return FeishuCommand(FeishuCommandKind.GUIDE, rest, raw)
     return FeishuCommand(FeishuCommandKind.UNKNOWN, rest, raw, f"Unknown command: {parts[0]}")

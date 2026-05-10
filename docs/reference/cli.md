@@ -82,6 +82,13 @@ uv run agenttalk status msg-20260506170000000000
 uv run agenttalk response msg-20260506170000000000
 ```
 
+Delivery states:
+
+```text
+sent -> delivered -> submitted -> acked -> completed
+submit_unconfirmed -> check `agenttalk dlq list`
+```
+
 Read recent context:
 
 ```bash
