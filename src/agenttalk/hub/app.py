@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -143,21 +144,42 @@ def create_app(settings: HubSettings) -> FastAPI:
             await websocket.close()
             return
         tmux = TmuxClient()
-        await websocket.send_text(f"AgentTalk terminal connected: {short_id}\r\n")
-        try:
-            await websocket.send_text(tmux.capture_pane(agent.tmux_target, lines=80).replace("\n", "\r\n"))
-        except Exception as exc:
-            await websocket.send_text(f"\r\nUnable to capture tmux pane: {exc}\r\n")
+
+        def capture_registered_target() -> str:
+            if hasattr(tmux, "capture_output"):
+                return tmux.capture_output(agent.tmux_target, lines=120)
+            return tmux.capture_pane(agent.tmux_target, lines=120)
+
+        async def send_snapshot(*, force: bool = False) -> str:
+            try:
+                output = capture_registered_target().replace("\n", "\r\n")
+            except Exception as exc:
+                output = f"Unable to capture registered tmux target {agent.tmux_target}: {exc}\r\n"
+            if force or output != send_snapshot.last_output:
+                send_snapshot.last_output = output
+                await websocket.send_text("\x1b[2J\x1b[H" + output)
+            return output
+
+        send_snapshot.last_output = ""  # type: ignore[attr-defined]
+
+        async def stream_snapshots() -> None:
+            await send_snapshot(force=True)
+            while True:
+                await asyncio.sleep(0.5)
+                await send_snapshot()
+
+        stream_task = asyncio.create_task(stream_snapshots())
         try:
             while True:
                 data = await websocket.receive_text()
                 try:
                     tmux.inject_text(agent.tmux_target, data, submit=False)
-                    await websocket.send_text(data)
                 except Exception as exc:
                     await websocket.send_text(f"\r\nUnable to write tmux pane: {exc}\r\n")
         except Exception:
             return
+        finally:
+            stream_task.cancel()
 
     @app.websocket("/ws/pty/{short_id}")
     async def pty_websocket(websocket: WebSocket, short_id: str):
@@ -171,7 +193,6 @@ def create_app(settings: HubSettings) -> FastAPI:
         try:
             context = store.get_agent_context(short_id)
             if context and context.context:
-                # Strip ANSI codes for clean display
                 import re
                 clean = re.sub(r'\x1b\[[0-9;]*[mKHJ]', '', context.context)
                 await websocket.send_text(f"\x1b[32m[Previous terminal output - {context.updated_at or 'unknown'}]\x1b[0m\r\n")
@@ -180,16 +201,47 @@ def create_app(settings: HubSettings) -> FastAPI:
         except Exception:
             pass
 
-        await websocket.send_text("\x1b[32m[Connected to PTY]\x1b[0m\r\n")
+        # Try to connect to relay tunnel first (for remote agents)
+        relay = store.get_relay(agent.machine_id)
+        if relay and relay.get("host_name"):
+            tunnel_url = f"ws://{relay['host_name']}:8788/tunnel/{short_id}"
+            try:
+                await websocket.send_text("\x1b[32m[Connecting to remote terminal...]\x1b[0m\r\n")
+                import websockets
+                async with websockets.connect(tunnel_url) as relay_ws:
+                    # Authenticate with relay
+                    await relay_ws.send(json.dumps({"token": settings.token}))
+                    await websocket.send_text("\x1b[32m[Connected to remote terminal]\x1b[0m\r\n")
 
-        # Create or get PTY session
+                    # Proxy data between browser and relay
+                    async def browser_to_relay():
+                        while True:
+                            message = await websocket.receive()
+                            if "text" in message:
+                                await relay_ws.send(message["text"])
+                            elif "bytes" in message:
+                                await relay_ws.send(message["bytes"])
+
+                    async def relay_to_browser():
+                        async for data in relay_ws:
+                            if isinstance(data, bytes):
+                                await websocket.send_bytes(data)
+                            else:
+                                await websocket.send_text(data)
+
+                    await asyncio.gather(browser_to_relay(), relay_to_browser())
+                return
+            except Exception as exc:
+                await websocket.send_text(f"\x1b[33m[Remote tunnel unavailable, falling back to local: {exc}]\x1b[0m\r\n")
+
+        # Fallback: local PTY (for agents on same machine as Hub)
+        await websocket.send_text("\x1b[32m[Connected to PTY]\x1b[0m\r\n")
         try:
             session = pty_manager.get_or_create(short_id, agent.tmux_target)
         except Exception as exc:
             await websocket.send_text(f"\x1b[31m[Failed to create PTY: {exc}]\x1b[0m\r\n")
             return
 
-        # Handle resize messages and data
         read_task = None
         write_task = None
         try:
@@ -199,9 +251,8 @@ def create_app(settings: HubSettings) -> FastAPI:
             while True:
                 message = await websocket.receive()
                 if "text" in message:
-                    # Text message could be resize command or regular data
                     text = message["text"]
-                    if text.startswith("\x01"):  # Resize command prefix
+                    if text.startswith("\x01"):
                         try:
                             _, rows, cols = text.split(":")
                             session.set_size(int(rows), int(cols))

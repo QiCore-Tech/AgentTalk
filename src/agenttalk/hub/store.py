@@ -194,6 +194,22 @@ class HubStore:
             row = conn.execute("SELECT 1 FROM relays WHERE machine_id = ?", (machine_id,)).fetchone()
         return row is not None
 
+    def get_relay(self, machine_id: str) -> dict[str, str] | None:
+        """Get relay info by machine_id."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT machine_id, host_name, user_name, last_seen_at FROM relays WHERE machine_id = ?",
+                (machine_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "machine_id": str(row["machine_id"]),
+            "host_name": str(row["host_name"]),
+            "user_name": str(row["user_name"]),
+            "last_seen_at": str(row["last_seen_at"]),
+        }
+
     def upsert_agent(self, request: AgentUpsertRequest) -> AgentResponse | None:
         if not self.relay_exists(request.machine_id):
             return None

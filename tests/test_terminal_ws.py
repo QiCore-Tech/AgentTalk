@@ -12,7 +12,7 @@ from agenttalk.hub.settings import HubSettings
 class FakeTmuxClient:
     writes: list[tuple[str, str, bool]] = []
 
-    def capture_pane(self, target: str, *, lines: int = 80) -> str:
+    def capture_output(self, target: str, *, lines: int = 120) -> str:
         return f"captured {target}"
 
     def inject_text(self, target: str, text: str, *, submit: bool) -> None:
@@ -56,9 +56,7 @@ def test_terminal_websocket_uses_registered_tmux_target(tmp_path: Path, monkeypa
     register_target(client)
 
     with client.websocket_connect("/ws/terminal/alice-codex-api") as websocket:
-        assert "AgentTalk terminal connected" in websocket.receive_text()
         assert "captured agenttalk-e2e-api:0.0" in websocket.receive_text()
         websocket.send_text("x")
-        assert websocket.receive_text() == "x"
 
     assert FakeTmuxClient.writes == [("agenttalk-e2e-api:0.0", "x", False)]
