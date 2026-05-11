@@ -5,16 +5,12 @@ import json
 import logging
 import os
 import subprocess
-import threading
-import time
-from pathlib import Path
 from typing import Any
 
 import websockets
 from websockets.server import WebSocketServerProtocol
 
-from agenttalk.config import AgentTalkConfig, load_config
-from agenttalk.hub.models import ReceiveMode
+from agenttalk.config import AgentTalkConfig
 
 logger = logging.getLogger(__name__)
 

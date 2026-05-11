@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import shutil
 import signal
@@ -789,11 +788,14 @@ def daemon_start(
             raise typer.Exit(1) from exc
         typer.echo(f"Synced {result.upserted} agents ({result.online} online, {result.offline} offline).")
         return
-    # Start tunnel server for remote terminal access
-    from agenttalk.tunnel_server import TunnelServer
-    tunnel_server = TunnelServer(config)
-    asyncio.get_event_loop().run_until_complete(tunnel_server.start())
-    typer.echo(f"Tunnel server started on port {tunnel_server.port}")
+    if os.environ.get("AGENTTALK_TUNNEL_ENABLE", "").lower() in {"1", "true", "yes", "on"}:
+        import asyncio
+
+        from agenttalk.tunnel_server import TunnelServer
+
+        tunnel_server = TunnelServer(config)
+        asyncio.get_event_loop().run_until_complete(tunnel_server.start())
+        typer.echo(f"Tunnel server started on port {tunnel_server.port}")
 
     relay.run_forever(interval_seconds=interval, config_path=config_path or default_config_path())
 
