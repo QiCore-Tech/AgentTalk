@@ -92,8 +92,15 @@ submit_unconfirmed -> check `agenttalk dlq list`
 Hub connection handling:
 
 - CLI and relay requests retry transient Hub/TLS connection setup failures, including TLS EOF during handshake.
+- Safe Hub write-back requests from the local relay retry transient `502/503/504` responses. Direct message creation is not retried by default, to avoid duplicate messages.
 - Response read failures are not retried, because the Hub may already have processed the request.
 - If a command still fails, retry the command or inspect existing work with `agenttalk status`, `agenttalk response`, and `agenttalk context`.
+
+Local relay recovery:
+
+- `agenttalk daemon start` reloads the local config file on each loop, so newly registered or renamed local agents can re-register and heartbeat without waiting for a daemon restart.
+- Pending watch state is persisted in `~/.agenttalk/watch_states.json` by default. Override with `AGENTTALK_WATCH_STATE_PATH` for tests or isolated deployments.
+- A restarted relay can reload pending watch entries and continue looking for the completion marker before sending the final response back to the Hub.
 
 Read recent context:
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
-from dataclasses import dataclass, field
+from dataclasses import field
 from pathlib import Path
 
 from pydantic import BaseModel, Field

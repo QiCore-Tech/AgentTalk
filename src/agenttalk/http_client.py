@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from typing import Any
 
 import httpx
@@ -10,9 +10,15 @@ import httpx
 
 DEFAULT_ATTEMPTS = 3
 DEFAULT_TIMEOUT_SECONDS = 10.0
+DEFAULT_RETRY_STATUSES = frozenset({502, 503, 504})
+DEFAULT_STATUS_RETRY_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS"})
 
 
-class HubConnectionError(RuntimeError):
+class HubRequestError(RuntimeError):
+    pass
+
+
+class HubConnectionError(HubRequestError):
     def __init__(self, *, method: str, url: str, attempts: int, cause: Exception) -> None:
         self.method = method.upper()
         self.url = url
@@ -21,6 +27,18 @@ class HubConnectionError(RuntimeError):
         super().__init__(
             f"Hub connection failed after {attempts} attempt(s): "
             f"{self.method} {url} ({type(cause).__name__}: {cause})"
+        )
+
+
+class HubStatusError(HubRequestError):
+    def __init__(self, *, method: str, url: str, status_code: int, attempts: int) -> None:
+        self.method = method.upper()
+        self.url = url
+        self.status_code = status_code
+        self.attempts = attempts
+        super().__init__(
+            f"Hub returned HTTP {status_code} after {attempts} attempt(s): "
+            f"{self.method} {url}"
         )
 
 
@@ -33,6 +51,7 @@ def request(
     json: Any | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     attempts: int | None = None,
+    retry_statuses: Collection[int] | None = None,
 ) -> httpx.Response:
     """Run a Hub HTTP request with bounded retries for connection setup errors.
 
@@ -43,11 +62,13 @@ def request(
     already have reached the Hub.
     """
 
+    resolved_method = method.upper()
     max_attempts = _resolved_attempts(attempts)
+    statuses_to_retry = _resolved_retry_statuses(resolved_method, retry_statuses)
     last_error: Exception | None = None
     for attempt_index in range(max_attempts):
         try:
-            return httpx.request(
+            response = httpx.request(
                 method,
                 url,
                 headers=dict(headers or {}),
@@ -55,6 +76,17 @@ def request(
                 json=json,
                 timeout=timeout,
             )
+            if response.status_code in statuses_to_retry:
+                if attempt_index + 1 >= max_attempts:
+                    raise HubStatusError(
+                        method=resolved_method,
+                        url=url,
+                        status_code=response.status_code,
+                        attempts=max_attempts,
+                    )
+                time.sleep(_retry_delay(attempt_index))
+                continue
+            return response
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             last_error = exc
             if attempt_index + 1 >= max_attempts:
@@ -84,6 +116,14 @@ def _resolved_attempts(attempts: int | None) -> int:
         return max(1, int(raw))
     except ValueError:
         return DEFAULT_ATTEMPTS
+
+
+def _resolved_retry_statuses(method: str, retry_statuses: Collection[int] | None) -> frozenset[int]:
+    if retry_statuses is not None:
+        return frozenset(retry_statuses)
+    if method in DEFAULT_STATUS_RETRY_METHODS:
+        return DEFAULT_RETRY_STATUSES
+    return frozenset()
 
 
 def _retry_delay(attempt_index: int) -> float:

@@ -4,7 +4,6 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import nest_asyncio
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -13,7 +12,6 @@ from fastapi.responses import JSONResponse
 
 from agenttalk.hub.errors import api_error
 from agenttalk.hub.models import (
-    AgentAlert,
     AgentContextUpdateRequest,
     AgentHealthReport,
     AgentListResponse,

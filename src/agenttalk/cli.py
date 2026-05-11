@@ -12,9 +12,9 @@ from typing import Annotated
 import typer
 import uvicorn
 
-from agenttalk.config import AgentBinding, load_config, save_config, upsert_binding
+from agenttalk.config import AgentBinding, default_config_path, load_config, save_config, upsert_binding
 from agenttalk.dlq import load_dead_letters, mark_dead_letter
-from agenttalk.http_client import HubConnectionError, request as hub_request
+from agenttalk.http_client import HubRequestError, request as hub_request
 from agenttalk.hub.client import HubClient
 from agenttalk.hub.app import create_app
 from agenttalk.hub.models import MessageStatus, ReceiveMode
@@ -161,16 +161,16 @@ def auth_headers(token: str) -> dict[str, str]:
 def _hub_request_or_exit(method: str, url: str, **kwargs) -> object:
     try:
         return hub_request(method, url, **kwargs)
-    except HubConnectionError as exc:
-        typer.echo(_format_hub_connection_error(exc), err=True)
+    except HubRequestError as exc:
+        typer.echo(_format_hub_request_error(exc), err=True)
         raise typer.Exit(1) from exc
 
 
-def _format_hub_connection_error(exc: HubConnectionError) -> str:
+def _format_hub_request_error(exc: HubRequestError) -> str:
     return (
         str(exc)
         + "\n"
-        + "This is usually a transient Hub/TLS/proxy connection failure. "
+        + "This is usually a transient Hub/TLS/proxy failure. "
         + "Retry the command, or use `agenttalk doctor` and the message "
         + "`status/response/context` commands to inspect existing work."
     )
@@ -360,8 +360,8 @@ def register(
         )
         try:
             relay.sync_once()
-        except HubConnectionError as exc:
-            typer.echo(_format_hub_connection_error(exc), err=True)
+        except HubRequestError as exc:
+            typer.echo(_format_hub_request_error(exc), err=True)
             typer.echo("Saved local binding, but Hub sync failed. Retry with `agenttalk daemon start --once`.", err=True)
     typer.echo(f"Registered local binding: {short_id}")
     if effective_pane_id:
@@ -606,7 +606,7 @@ def watch_message(*, message_id: str, resolved_hub_url: str, resolved_token: str
                 timeout=10,
             )
             message_payload.raise_for_status()
-        except HubConnectionError as exc:
+        except HubRequestError as exc:
             typer.echo(f"[hub connection retry failed] {exc}")
             time.sleep(1)
             continue
@@ -621,7 +621,7 @@ def watch_message(*, message_id: str, resolved_hub_url: str, resolved_token: str
                 headers=auth_headers(resolved_token),
                 timeout=10,
             )
-        except HubConnectionError:
+        except HubRequestError:
             time.sleep(1)
             continue
         if response_payload.status_code == 200:
@@ -783,12 +783,12 @@ def daemon_start(
     if once:
         try:
             result = relay.sync_once()
-        except HubConnectionError as exc:
-            typer.echo(_format_hub_connection_error(exc), err=True)
+        except HubRequestError as exc:
+            typer.echo(_format_hub_request_error(exc), err=True)
             raise typer.Exit(1) from exc
         typer.echo(f"Synced {result.upserted} agents ({result.online} online, {result.offline} offline).")
         return
-    relay.run_forever(interval_seconds=interval)
+    relay.run_forever(interval_seconds=interval, config_path=config_path or default_config_path())
 
 
 @daemon_app.command("supervise", hidden=True)

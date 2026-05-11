@@ -4,6 +4,8 @@ from agenttalk.config import AgentBinding, AgentTalkConfig
 from agenttalk.http_client import request
 from agenttalk.hub.models import AgentHealthReport, AgentStatus, MessageStatus
 
+SAFE_POST_RETRY_STATUSES = frozenset({502, 503, 504})
+
 
 STATUS_COMPAT_FALLBACKS = {
     MessageStatus.SUBMITTED: MessageStatus.INJECTED,
@@ -32,6 +34,7 @@ class HubClient:
                 "user_name": config.user_name,
             },
             timeout=10,
+            retry_statuses=SAFE_POST_RETRY_STATUSES,
         )
         response.raise_for_status()
 
@@ -42,6 +45,7 @@ class HubClient:
             headers=self.headers,
             json={"machine_id": machine_id},
             timeout=10,
+            retry_statuses=SAFE_POST_RETRY_STATUSES,
         )
         response.raise_for_status()
 
@@ -71,6 +75,7 @@ class HubClient:
             headers=self.headers,
             json=report.model_dump(),
             timeout=10,
+            retry_statuses=SAFE_POST_RETRY_STATUSES,
         )
         response.raise_for_status()
 
@@ -91,6 +96,7 @@ class HubClient:
             headers=self.headers,
             json={"status": status.value, "error": error},
             timeout=10,
+            retry_statuses=SAFE_POST_RETRY_STATUSES,
         )
         if response.status_code == 422 and status in STATUS_COMPAT_FALLBACKS:
             fallback = STATUS_COMPAT_FALLBACKS[status]
@@ -101,6 +107,7 @@ class HubClient:
                 headers=self.headers,
                 json={"status": fallback.value, "error": compat_error},
                 timeout=10,
+                retry_statuses=SAFE_POST_RETRY_STATUSES,
             )
         response.raise_for_status()
 
@@ -111,6 +118,7 @@ class HubClient:
             headers=self.headers,
             json={"response_text": response_text, "completed": completed},
             timeout=10,
+            retry_statuses=SAFE_POST_RETRY_STATUSES,
         )
         response.raise_for_status()
 
@@ -141,6 +149,7 @@ class HubClient:
             headers=self.headers,
             json={"context": context},
             timeout=10,
+            retry_statuses=SAFE_POST_RETRY_STATUSES,
         )
         response.raise_for_status()
 

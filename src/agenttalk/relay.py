@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from agenttalk.config import AgentTalkConfig
+from agenttalk.config import AgentTalkConfig, default_config_path, load_config
 from agenttalk.dlq import record_dead_letter
-from agenttalk.http_client import HubConnectionError
+from agenttalk.http_client import HubRequestError
 from agenttalk.hub.client import HubClient
 from agenttalk.hub.models import AgentHealthReport, AgentStatus, MessageStatus, ReceiveMode
 from agenttalk.process_manager import (
@@ -47,6 +49,21 @@ class WatchState:
     target: str
     baseline: str
     done_marker: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "target": self.target,
+            "baseline": self.baseline,
+            "done_marker": self.done_marker,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, str]) -> WatchState:
+        return cls(
+            target=str(payload["target"]),
+            baseline=str(payload["baseline"]),
+            done_marker=str(payload["done_marker"]),
+        )
 
 
 @dataclass
@@ -159,11 +176,19 @@ def output_fingerprint(output: str) -> str:
 
 
 class AgentTalkRelay:
-    def __init__(self, config: AgentTalkConfig, *, hub_client: HubClient, tmux_client: ProcessManager) -> None:
+    def __init__(
+        self,
+        config: AgentTalkConfig,
+        *,
+        hub_client: HubClient,
+        tmux_client: ProcessManager,
+        watch_state_path: Path | None = None,
+    ) -> None:
         self.config = config
         self.hub_client = hub_client
         self.tmux_client = tmux_client
-        self.watch_states: dict[str, WatchState] = {}
+        self.watch_state_path = watch_state_path or default_watch_state_path()
+        self.watch_states: dict[str, WatchState] = self._load_watch_states()
         self.health_states: dict[str, AgentHealthState] = {}
         # Initialize LLM analyzer if available and enabled in config
         self._llm_analyzer = None
@@ -176,6 +201,41 @@ class AgentTalkRelay:
                 )
             except Exception:
                 pass  # LLM analysis disabled if configuration fails
+
+    def reload_config(self, config: AgentTalkConfig) -> None:
+        previous_hub_url = getattr(self.hub_client, "hub_url", self.config.hub_url.rstrip("/"))
+        previous_token = getattr(self.hub_client, "token", self.config.token)
+        self.config = config
+        if previous_hub_url != config.hub_url.rstrip("/") or previous_token != config.token:
+            self.hub_client = HubClient(config.hub_url, config.token)
+
+    def reload_config_from_disk(self, config_path: Path | None = None) -> None:
+        self.reload_config(load_config(config_path))
+
+    def _load_watch_states(self) -> dict[str, WatchState]:
+        try:
+            raw = json.loads(self.watch_state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        loaded: dict[str, WatchState] = {}
+        for message_id, payload in raw.items():
+            if not isinstance(payload, dict):
+                continue
+            try:
+                loaded[str(message_id)] = WatchState.from_dict(payload)
+            except (KeyError, TypeError, ValueError):
+                continue
+        return loaded
+
+    def _save_watch_states(self) -> None:
+        self.watch_state_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            message_id: state.to_dict()
+            for message_id, state in sorted(self.watch_states.items())
+        }
+        self.watch_state_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     def sync_once(self) -> RelaySyncResult:
         self.hub_client.register_relay(self.config)
@@ -288,7 +348,9 @@ class AgentTalkRelay:
             status=status,
         )
 
-    def run_once(self, *, context_counter: int = 0) -> int:
+    def run_once(self, *, context_counter: int = 0, config_path: Path | None = None) -> int:
+        if config_path is not None:
+            self.reload_config_from_disk(config_path)
         # Heartbeat first so transient failures in any sub-step below cannot keep
         # the relay's last_seen_at frozen for >heartbeat_ttl_seconds (which would
         # cause the Hub to derive every agent on this machine as OFFLINE even when
@@ -297,8 +359,8 @@ class AgentTalkRelay:
         for step in (self.sync_once, self.process_next_message_once, self.update_watches_once):
             try:
                 step()
-            except HubConnectionError as exc:
-                logger.warning("AgentTalk relay Hub connection failed in %s: %s", step.__name__, exc)
+            except HubRequestError as exc:
+                logger.warning("AgentTalk relay Hub request failed in %s: %s", step.__name__, exc)
             except Exception:
                 logger.exception("AgentTalk relay step %s failed; continuing", step.__name__)
         # Sync context every 6 intervals (~30s at the default interval).
@@ -318,8 +380,8 @@ class AgentTalkRelay:
     def _safe_heartbeat(self) -> None:
         try:
             self.hub_client.heartbeat(self.config.machine_id)
-        except HubConnectionError as exc:
-            logger.warning("AgentTalk relay heartbeat connection failed; will retry next tick: %s", exc)
+        except HubRequestError as exc:
+            logger.warning("AgentTalk relay heartbeat Hub request failed; will retry next tick: %s", exc)
         except Exception:
             logger.exception("AgentTalk relay heartbeat failed; will retry next tick")
 
@@ -328,12 +390,13 @@ class AgentTalkRelay:
         *,
         interval_seconds: float = 5.0,
         max_iterations: int | None = None,
+        config_path: Path | None = None,
     ) -> None:
         context_counter = 0
         iterations = 0
         while max_iterations is None or iterations < max_iterations:
             try:
-                context_counter = self.run_once(context_counter=context_counter)
+                context_counter = self.run_once(context_counter=context_counter, config_path=config_path)
             except Exception:
                 logger.exception("AgentTalk relay loop failed; retrying")
             iterations += 1
@@ -389,12 +452,13 @@ class AgentTalkRelay:
             )
         else:
             injected_status = MessageStatus.INJECTED
-        self.hub_client.update_message_status(message["message_id"], injected_status)
         self.watch_states[message["message_id"]] = WatchState(
             target=binding.tmux_target,
             baseline=baseline,
             done_marker=message["done_marker"],
         )
+        self._save_watch_states()
+        self.hub_client.update_message_status(message["message_id"], injected_status)
         return True
 
     def update_watches_once(self) -> int:
@@ -437,6 +501,8 @@ class AgentTalkRelay:
             updates += 1
         for message_id in completed:
             self.watch_states.pop(message_id, None)
+        if completed:
+            self._save_watch_states()
         return updates
 
     def sync_context_once(self, *, lines: int = 200) -> int:
@@ -465,6 +531,13 @@ class StaticTmuxClient(TmuxProcessManager):
 
 def default_message_spool_dir() -> Path:
     return Path.home() / ".agenttalk" / "inbox"
+
+
+def default_watch_state_path() -> Path:
+    configured = os.environ.get("AGENTTALK_WATCH_STATE_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    return default_config_path().parent / "watch_states.json"
 
 
 def _safe_spool_filename(message_id: str) -> str:

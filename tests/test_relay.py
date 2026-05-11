@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from agenttalk.config import AgentBinding, AgentTalkConfig
+import pytest
+
+from agenttalk.config import AgentBinding, AgentTalkConfig, save_config
 from agenttalk.hub.models import AgentStatus, MessageStatus, ReceiveMode
 from agenttalk.process_manager import InjectionResult
 from agenttalk.relay import (
@@ -17,6 +19,11 @@ from agenttalk.relay import (
     tail_shows_live_agent_ui,
 )
 from agenttalk.tmux import TmuxPane
+
+
+@pytest.fixture(autouse=True)
+def isolate_watch_state(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AGENTTALK_WATCH_STATE_PATH", str(tmp_path / "agenttalk-state" / "watch_states.json"))
 
 
 @dataclass
@@ -62,6 +69,12 @@ class FakeHubClient:
 
     def heartbeat(self, machine_id: str) -> None:
         self.heartbeats.append(machine_id)
+
+
+class FailingStatusHubClient(FakeHubClient):
+    def update_message_status(self, message_id: str, status: MessageStatus, error: str = "") -> None:
+        super().update_message_status(message_id, status, error)
+        raise RuntimeError("hub status endpoint down")
 
 
 class FlakyRegisterHubClient(FakeHubClient):
@@ -379,7 +392,7 @@ def test_prepare_injected_message_spools_long_multiline_message(tmp_path) -> Non
         spool_dir=tmp_path,
     )
 
-    spool_files = list(tmp_path.iterdir())
+    spool_files = list(tmp_path.glob("*.md"))
     assert len(spool_files) == 1
     spooled = spool_files[0].read_text(encoding="utf-8")
     assert body in spooled
@@ -429,6 +442,102 @@ def test_relay_process_next_message_injects_auto_submit() -> None:
     assert fake_hub.status_updates == [("msg-1", MessageStatus.SUBMITTED, "")]
 
 
+def test_relay_persists_watch_before_status_update_failure(tmp_path) -> None:
+    watch_path = tmp_path / "watch_states.json"
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+                receive_mode=ReceiveMode.AUTO_SUBMIT,
+            )
+        ],
+    )
+    fake_hub = FailingStatusHubClient(
+        next_payload={
+            "message_id": "msg-1",
+            "sender": "bob",
+            "target": "alice-codex-api",
+            "body": "Please review.",
+            "done_marker": "<<<AGENTTALK_DONE:msg-1>>>",
+        }
+    )
+    tmux = RecordingTmuxClient([])
+
+    try:
+        AgentTalkRelay(
+            config,
+            hub_client=fake_hub,
+            tmux_client=tmux,
+            watch_state_path=watch_path,
+        ).process_next_message_once()
+    except RuntimeError:
+        pass
+
+    reloaded = AgentTalkRelay(
+        config,
+        hub_client=FakeHubClient(),
+        tmux_client=tmux,
+        watch_state_path=watch_path,
+    )
+
+    assert "msg-1" in reloaded.watch_states
+    assert reloaded.watch_states["msg-1"].target == "dev:0.1"
+
+
+def test_relay_reloads_config_from_disk_without_losing_watch_state(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    watch_path = tmp_path / "watch_states.json"
+    initial = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    updated = initial.model_copy(
+        update={
+            "agents": [
+                AgentBinding(
+                    short_id="new-agent",
+                    owner="alice",
+                    kind="codex",
+                    workspace="/workspace/api",
+                    tmux_target="dev:0.1",
+                    pane_id="%1",
+                )
+            ]
+        }
+    )
+    save_config(updated, config_path)
+    relay = AgentTalkRelay(
+        initial,
+        hub_client=FakeHubClient(),
+        tmux_client=RecordingTmuxClient([]),
+        watch_state_path=watch_path,
+    )
+    relay.watch_states["msg-1"] = WatchState(
+        target="dev:0.1",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+
+    relay.run_once(config_path=config_path)
+
+    assert [agent.short_id for agent in relay.config.agents] == ["new-agent"]
+    assert "msg-1" in relay.watch_states
+
+
 def test_relay_process_next_message_spools_long_body(monkeypatch, tmp_path) -> None:
     import agenttalk.relay as relay_module
 
@@ -470,7 +579,7 @@ def test_relay_process_next_message_spools_long_body(monkeypatch, tmp_path) -> N
     assert tmux.injections[0][2] is True
     assert body not in injected
     assert "\n" not in injected
-    spool_files = list(tmp_path.iterdir())
+    spool_files = list(tmp_path.glob("*.md"))
     assert len(spool_files) == 1
     assert body in spool_files[0].read_text(encoding="utf-8")
     assert fake_hub.status_updates == [("msg-long", MessageStatus.SUBMITTED, "")]

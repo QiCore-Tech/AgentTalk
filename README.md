@@ -198,7 +198,10 @@ AgentTalk 的 P0 可靠性链路包括：
 - `acked` 表示目标 agent 已打印 `AGENTTALK_ACK:<message-id>`，确认任务已被 agent 看到
 - `submit_unconfirmed` 表示 relay 怀疑消息仍停在输入框，需检查 DLQ
 - 长消息默认写入本地 inbox 文件，tmux 只注入短指令，降低 Codex/Claude TUI 粘贴失败风险
-- CLI 和本地 relay 会对 Hub/TLS 连接建立阶段的短暂 EOF/断连做有限重试；如果仍失败，会给出可读错误和后续 `status/response/context` 追踪命令
+- CLI 和本地 relay 会对 Hub/TLS 连接建立阶段的短暂 EOF/断连做有限重试；安全的 Hub 写回接口也会重试临时 `502/503/504`
+- relay 每轮会重新读取本地配置，新增或改名后的 agent 不需要等到下次 daemon restart 才能注册和 heartbeat
+- relay 会把待 watch 的消息持久化到 `~/.agenttalk/watch_states.json`；如果 daemon 重启或 Hub 临时不可用，后续轮询仍可继续尝试完成回传
+- 如果 Hub 请求仍失败，CLI 会给出可读错误和后续 `status/response/context` 追踪命令
 
 本地 relay 管理：
 
