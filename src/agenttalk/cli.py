@@ -789,13 +789,10 @@ def daemon_start(
         typer.echo(f"Synced {result.upserted} agents ({result.online} online, {result.offline} offline).")
         return
     if os.environ.get("AGENTTALK_TUNNEL_ENABLE", "").lower() in {"1", "true", "yes", "on"}:
-        import asyncio
+        from agenttalk.tunnel_server import start_tunnel_server
 
-        from agenttalk.tunnel_server import TunnelServer
-
-        tunnel_server = TunnelServer(config)
-        asyncio.get_event_loop().run_until_complete(tunnel_server.start())
-        typer.echo(f"Tunnel server started on port {tunnel_server.port}")
+        tunnel_server = start_tunnel_server(config, config_path=config_path or default_config_path())
+        typer.echo(f"Tunnel server started on {tunnel_server.host}:{tunnel_server.port}")
 
     relay.run_forever(interval_seconds=interval, config_path=config_path or default_config_path())
 

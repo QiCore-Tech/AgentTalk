@@ -5,12 +5,14 @@ import json
 import logging
 import os
 import subprocess
+import threading
+from pathlib import Path
 from typing import Any
 
 import websockets
-from websockets.server import WebSocketServerProtocol
+from websockets.legacy.server import WebSocketServerProtocol, serve
 
-from agenttalk.config import AgentTalkConfig
+from agenttalk.config import AgentTalkConfig, default_config_path, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +87,13 @@ class TunnelSession:
                 pass
 
         # Regular input - use send-keys
-        subprocess.run(
-            ["tmux", "-S", self._tmux_socket, "send-keys", "-t", self.tmux_target, data],
+        proc = subprocess.run(
+            ["tmux", "-S", self._tmux_socket, "send-keys", "-l", "-t", self.tmux_target, data],
             capture_output=True,
             check=False,
         )
+        if proc.returncode != 0:
+            raise RuntimeError(f"tmux input failed: {proc.stderr}")
 
     async def close(self) -> None:
         """Close the tunnel session."""
@@ -108,13 +112,22 @@ class TunnelServer:
     Provides remote access to local tmux sessions via WebSocket.
     """
 
-    def __init__(self, config: AgentTalkConfig, host: str = "0.0.0.0", port: int = 8788) -> None:
+    def __init__(
+        self,
+        config: AgentTalkConfig,
+        host: str = "0.0.0.0",
+        port: int = 8788,
+        config_path: Path | None = None,
+    ) -> None:
         self.config = config
+        self.config_path = config_path
         self.host = host
         self.port = port
         self._server: Any = None
         self._sessions: dict[str, TunnelSession] = {}
         self._running = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
 
     async def start(self) -> None:
         """Start the tunnel server."""
@@ -122,12 +135,40 @@ class TunnelServer:
             return
         self._running = True
         logger.info("Starting tunnel server on %s:%d", self.host, self.port)
-        self._server = await websockets.serve(
+        self._server = await serve(
             self._handle_connection,
             self.host,
             self.port,
         )
         logger.info("Tunnel server started on %s:%d", self.host, self.port)
+
+    def start_background(self) -> None:
+        """Start the tunnel server on its own event loop."""
+        if self._thread and self._thread.is_alive():
+            return
+        started = threading.Event()
+        errors: list[BaseException] = []
+
+        def run() -> None:
+            loop = asyncio.new_event_loop()
+            self._loop = loop
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self.start())
+            except BaseException as exc:
+                errors.append(exc)
+                started.set()
+                return
+            started.set()
+            loop.run_forever()
+
+        self._thread = threading.Thread(target=run, name="agenttalk-tunnel", daemon=True)
+        self._thread.start()
+        started.wait(timeout=5)
+        if errors:
+            raise RuntimeError(f"failed to start tunnel server: {errors[0]}") from errors[0]
+        if not self._running:
+            raise RuntimeError("failed to start tunnel server")
 
     async def stop(self) -> None:
         """Stop the tunnel server."""
@@ -156,14 +197,15 @@ class TunnelServer:
             auth_msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
             auth_data = json.loads(auth_msg)
             token = auth_data.get("token", "")
+            current_config = load_config(self.config_path)
 
-            if token != self.config.token:
+            if token != current_config.token:
                 await websocket.close(code=4001, reason="Invalid token")
                 return
 
             # Find the agent binding
             binding = next(
-                (agent for agent in self.config.agents if agent.short_id == short_id),
+                (agent for agent in current_config.agents if agent.short_id == short_id),
                 None,
             )
             if binding is None:
@@ -197,9 +239,10 @@ class TunnelServer:
             await websocket.close(code=1011, reason="Internal error")
 
 
-def start_tunnel_server(config: AgentTalkConfig) -> TunnelServer:
+def start_tunnel_server(config: AgentTalkConfig, *, config_path: Path | None = None) -> TunnelServer:
     """Create and start a tunnel server."""
+    host = os.environ.get("AGENTTALK_TUNNEL_HOST", "0.0.0.0")
     port = int(os.environ.get("AGENTTALK_TUNNEL_PORT", "8788"))
-    server = TunnelServer(config, port=port)
-    asyncio.create_task(server.start())
+    server = TunnelServer(config, host=host, port=port, config_path=config_path or default_config_path())
+    server.start_background()
     return server
