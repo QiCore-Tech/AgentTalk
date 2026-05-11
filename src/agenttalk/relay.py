@@ -9,6 +9,7 @@ from pathlib import Path
 
 from agenttalk.config import AgentTalkConfig
 from agenttalk.dlq import record_dead_letter
+from agenttalk.http_client import HubConnectionError
 from agenttalk.hub.client import HubClient
 from agenttalk.hub.models import AgentHealthReport, AgentStatus, MessageStatus, ReceiveMode
 from agenttalk.process_manager import (
@@ -296,6 +297,8 @@ class AgentTalkRelay:
         for step in (self.sync_once, self.process_next_message_once, self.update_watches_once):
             try:
                 step()
+            except HubConnectionError as exc:
+                logger.warning("AgentTalk relay Hub connection failed in %s: %s", step.__name__, exc)
             except Exception:
                 logger.exception("AgentTalk relay step %s failed; continuing", step.__name__)
         # Sync context every 6 intervals (~30s at the default interval).
@@ -315,6 +318,8 @@ class AgentTalkRelay:
     def _safe_heartbeat(self) -> None:
         try:
             self.hub_client.heartbeat(self.config.machine_id)
+        except HubConnectionError as exc:
+            logger.warning("AgentTalk relay heartbeat connection failed; will retry next tick: %s", exc)
         except Exception:
             logger.exception("AgentTalk relay heartbeat failed; will retry next tick")
 

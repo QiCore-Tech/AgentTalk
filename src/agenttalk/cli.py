@@ -9,12 +9,12 @@ import time
 from pathlib import Path
 from typing import Annotated
 
-import httpx
 import typer
 import uvicorn
 
 from agenttalk.config import AgentBinding, load_config, save_config, upsert_binding
 from agenttalk.dlq import load_dead_letters, mark_dead_letter
+from agenttalk.http_client import HubConnectionError, request as hub_request
 from agenttalk.hub.client import HubClient
 from agenttalk.hub.app import create_app
 from agenttalk.hub.models import MessageStatus, ReceiveMode
@@ -158,6 +158,24 @@ def auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _hub_request_or_exit(method: str, url: str, **kwargs) -> object:
+    try:
+        return hub_request(method, url, **kwargs)
+    except HubConnectionError as exc:
+        typer.echo(_format_hub_connection_error(exc), err=True)
+        raise typer.Exit(1) from exc
+
+
+def _format_hub_connection_error(exc: HubConnectionError) -> str:
+    return (
+        str(exc)
+        + "\n"
+        + "This is usually a transient Hub/TLS/proxy connection failure. "
+        + "Retry the command, or use `agenttalk doctor` and the message "
+        + "`status/response/context` commands to inspect existing work."
+    )
+
+
 @hub_app.command("serve")
 def serve_hub(
     host: Annotated[str, typer.Option(help="Host to bind.")] = "127.0.0.1",
@@ -208,7 +226,8 @@ def list_agents(
     if mine:
         machine_id = config.machine_id
     params = {key: value for key, value in {"owner": owner, "machine_id": machine_id}.items() if value}
-    response = httpx.get(
+    response = _hub_request_or_exit(
+        "GET",
         f"{resolved_hub_url.rstrip('/')}/api/agents",
         headers=auth_headers(resolved_token),
         params=params,
@@ -339,7 +358,11 @@ def register(
             hub_client=HubClient(config.hub_url, config.token),
             tmux_client=get_process_manager(),
         )
-        relay.sync_once()
+        try:
+            relay.sync_once()
+        except HubConnectionError as exc:
+            typer.echo(_format_hub_connection_error(exc), err=True)
+            typer.echo("Saved local binding, but Hub sync failed. Retry with `agenttalk daemon start --once`.", err=True)
     typer.echo(f"Registered local binding: {short_id}")
     if effective_pane_id:
         typer.echo(f"  pane_id: {effective_pane_id}")
@@ -362,7 +385,8 @@ def unregister(
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
     
     # Remove from Hub
-    response = httpx.delete(
+    response = _hub_request_or_exit(
+        "DELETE",
         f"{resolved_hub_url.rstrip('/')}/api/agents/{short_id}",
         headers=auth_headers(resolved_token),
         timeout=10,
@@ -441,7 +465,8 @@ def send_message(
     # send the message but skip the receive-mode hint.
     target_receive_mode: str | None = None
     try:
-        target_lookup = httpx.get(
+        target_lookup = hub_request(
+            "GET",
             f"{resolved_hub_url.rstrip('/')}/api/agents/{to}",
             headers=auth_headers(resolved_token),
             timeout=10,
@@ -451,7 +476,8 @@ def send_message(
     except Exception:
         target_receive_mode = None
 
-    response = httpx.post(
+    response = _hub_request_or_exit(
+        "POST",
         f"{resolved_hub_url.rstrip('/')}/api/messages",
         headers=auth_headers(resolved_token),
         json={"to": to, "body": message, "sender": sender},
@@ -498,7 +524,8 @@ def message_status(
     if not resolved_token:
         raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
-    response = httpx.get(
+    response = _hub_request_or_exit(
+        "GET",
         f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}",
         headers=auth_headers(resolved_token),
         timeout=10,
@@ -526,7 +553,8 @@ def message_response(
     if not resolved_token:
         raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
-    response = httpx.get(
+    response = _hub_request_or_exit(
+        "GET",
         f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}/response",
         headers=auth_headers(resolved_token),
         timeout=10,
@@ -550,7 +578,8 @@ def agent_context(
     if not resolved_token:
         raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
-    response = httpx.get(
+    response = _hub_request_or_exit(
+        "GET",
         f"{resolved_hub_url.rstrip('/')}/api/agents/{agent_id}/context",
         headers=auth_headers(resolved_token),
         timeout=10,
@@ -569,21 +598,32 @@ def watch_message(*, message_id: str, resolved_hub_url: str, resolved_token: str
     last_status = ""
     last_response = ""
     while time.monotonic() < deadline:
-        message_payload = httpx.get(
-            f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}",
-            headers=auth_headers(resolved_token),
-            timeout=10,
-        )
-        message_payload.raise_for_status()
+        try:
+            message_payload = hub_request(
+                "GET",
+                f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}",
+                headers=auth_headers(resolved_token),
+                timeout=10,
+            )
+            message_payload.raise_for_status()
+        except HubConnectionError as exc:
+            typer.echo(f"[hub connection retry failed] {exc}")
+            time.sleep(1)
+            continue
         message = message_payload.json()
         if message["status"] != last_status:
             typer.echo(f"[{message['status']}]")
             last_status = message["status"]
-        response_payload = httpx.get(
-            f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}/response",
-            headers=auth_headers(resolved_token),
-            timeout=10,
-        )
+        try:
+            response_payload = hub_request(
+                "GET",
+                f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}/response",
+                headers=auth_headers(resolved_token),
+                timeout=10,
+            )
+        except HubConnectionError:
+            time.sleep(1)
+            continue
         if response_payload.status_code == 200:
             response_text = response_payload.json()["response_text"]
             if response_text != last_response:
@@ -595,6 +635,9 @@ def watch_message(*, message_id: str, resolved_hub_url: str, resolved_token: str
             return
         time.sleep(1)
     typer.echo("[timeout]")
+    typer.echo("Trace later with:")
+    typer.echo(f"  agenttalk status {message_id}")
+    typer.echo(f"  agenttalk response {message_id}")
 
 
 @dlq_app.command("list")
@@ -631,7 +674,8 @@ def dlq_retry(
     if not resolved_token:
         raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
-    response = httpx.post(
+    response = _hub_request_or_exit(
+        "POST",
         f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}/status",
         headers=auth_headers(resolved_token),
         json={"status": MessageStatus.SENT.value, "error": ""},
@@ -658,7 +702,8 @@ def dlq_fail(
     if not resolved_token:
         raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
-    response = httpx.post(
+    response = _hub_request_or_exit(
+        "POST",
         f"{resolved_hub_url.rstrip('/')}/api/messages/{message_id}/status",
         headers=auth_headers(resolved_token),
         json={"status": MessageStatus.FAILED.value, "error": reason},
@@ -687,7 +732,8 @@ def config_auto_resume(
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
     
     # Get current config for this agent
-    response = httpx.get(
+    response = _hub_request_or_exit(
+        "GET",
         f"{resolved_hub_url.rstrip('/')}/api/agents/{short_id}/auto_resume",
         headers=auth_headers(resolved_token),
         timeout=10,
@@ -703,7 +749,8 @@ def config_auto_resume(
             "enabled": enabled if enabled is not None else current["enabled"],
             "message": message if message is not None else current["message"],
         }
-        response = httpx.post(
+        response = _hub_request_or_exit(
+            "POST",
             f"{resolved_hub_url.rstrip('/')}/api/agents/{short_id}/auto_resume",
             headers=auth_headers(resolved_token),
             json=new_config,
@@ -734,7 +781,11 @@ def daemon_start(
         tmux_client=get_process_manager(),
     )
     if once:
-        result = relay.sync_once()
+        try:
+            result = relay.sync_once()
+        except HubConnectionError as exc:
+            typer.echo(_format_hub_connection_error(exc), err=True)
+            raise typer.Exit(1) from exc
         typer.echo(f"Synced {result.upserted} agents ({result.online} online, {result.offline} offline).")
         return
     relay.run_forever(interval_seconds=interval)
@@ -851,7 +902,7 @@ def doctor(
     typer.echo(f"daemon: {'running' if _pid_alive(pid) else 'not running'}" + (f" pid={pid}" if _pid_alive(pid) else ""))
     if config.token:
         try:
-            response = httpx.get(f"{config.hub_url.rstrip('/')}/health", timeout=5)
+            response = hub_request("GET", f"{config.hub_url.rstrip('/')}/health", timeout=5)
             typer.echo(f"hub health: {response.status_code}")
         except Exception as exc:
             typer.echo(f"hub health: failed ({exc})")

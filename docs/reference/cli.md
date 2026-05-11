@@ -89,6 +89,12 @@ sent -> delivered -> submitted -> acked -> completed
 submit_unconfirmed -> check `agenttalk dlq list`
 ```
 
+Hub connection handling:
+
+- CLI and relay requests retry transient Hub/TLS connection setup failures, including TLS EOF during handshake.
+- Response read failures are not retried, because the Hub may already have processed the request.
+- If a command still fails, retry the command or inspect existing work with `agenttalk status`, `agenttalk response`, and `agenttalk context`.
+
 Read recent context:
 
 ```bash

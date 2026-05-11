@@ -16,7 +16,8 @@ class FakeResponse:
 def test_update_message_status_falls_back_for_old_hub_enum(monkeypatch) -> None:
     calls: list[dict] = []
 
-    def fake_post(*_args, **kwargs) -> FakeResponse:
+    def fake_request(method, _url, **kwargs) -> FakeResponse:
+        assert method == "POST"
         calls.append(kwargs["json"])
         if len(calls) == 1:
             return FakeResponse(422)
@@ -24,7 +25,7 @@ def test_update_message_status_falls_back_for_old_hub_enum(monkeypatch) -> None:
 
     import agenttalk.hub.client as client_module
 
-    monkeypatch.setattr(client_module.httpx, "post", fake_post)
+    monkeypatch.setattr(client_module, "request", fake_request)
 
     HubClient("http://hub.local", "token").update_message_status(
         "msg-1",
