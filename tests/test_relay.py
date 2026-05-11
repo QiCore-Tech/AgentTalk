@@ -108,6 +108,11 @@ class RecordingTmuxClient(StaticTmuxClient):
         return self.injection_result
 
 
+class FailingCaptureTmuxClient(RecordingTmuxClient):
+    def capture_output(self, target: str, *, lines: int = 300) -> str:
+        raise RuntimeError(f"can't find session: {target}")
+
+
 def test_relay_sync_marks_missing_pane_offline() -> None:
     config = AgentTalkConfig(
         hub_url="http://hub.local:8787",
@@ -745,6 +750,32 @@ def test_relay_watch_marks_acked_without_completion() -> None:
     assert fake_hub.response_updates == [("msg-1", "", False)]
     assert fake_hub.status_updates == [("msg-1", MessageStatus.ACKED, "")]
     assert "msg-1" in relay.watch_states
+
+
+def test_relay_watch_fails_closed_when_target_pane_disappears() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=FailingCaptureTmuxClient([]))
+    relay.watch_states["msg-1"] = WatchState(
+        target="agenttalk-e2e-missing:0.0",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+
+    updates = relay.update_watches_once()
+
+    assert updates == 0
+    assert fake_hub.status_updates == [
+        ("msg-1", MessageStatus.FAILED, "watch target unavailable: agenttalk-e2e-missing:0.0")
+    ]
+    assert "msg-1" not in relay.watch_states
 
 
 def test_relay_watch_detects_done_marker() -> None:

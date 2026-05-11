@@ -476,7 +476,25 @@ class AgentTalkRelay:
             }:
                 completed.append(message_id)
                 continue
-            output = self.tmux_client.capture_output(state.target, lines=800)
+            try:
+                output = self.tmux_client.capture_output(state.target, lines=800)
+            except Exception as exc:
+                logger.warning(
+                    "AgentTalk relay watch target disappeared for %s (%s): %s",
+                    message_id,
+                    state.target,
+                    exc,
+                )
+                try:
+                    self.hub_client.update_message_status(
+                        message_id,
+                        MessageStatus.FAILED,
+                        error=f"watch target unavailable: {state.target}",
+                    )
+                except Exception:
+                    logger.exception("AgentTalk relay failed to mark missing watch target %s as failed", message_id)
+                completed.append(message_id)
+                continue
             delta = output_delta(state.baseline, output)
             if not delta:
                 continue
