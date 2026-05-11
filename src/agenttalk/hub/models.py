@@ -164,3 +164,99 @@ class AgentContextResponse(BaseModel):
     short_id: str
     context: str
     updated_at: str | None = None
+
+
+# ==================== Machine / Workspace / Task Models ====================
+
+class Visibility(StrEnum):
+    PRIVATE = "private"
+    SHARED = "shared"
+    PUBLIC = "public"
+
+
+class Permission(StrEnum):
+    VIEW = "view"
+    MANAGE = "manage"
+    ADMIN = "admin"
+
+
+class MachineCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    host_name: str = Field(min_length=1, max_length=255)
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class MachineResponse(BaseModel):
+    id: int
+    user_id: str
+    name: str
+    host_name: str
+    relay_machine_id: str
+    status: str
+    last_seen_at: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    visibility: str = "private"
+    shared_with: list[str] = Field(default_factory=list)
+    created_at: str
+
+
+class MachineListResponse(BaseModel):
+    machines: list[MachineResponse]
+
+
+class WorkspaceCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    path: str = Field(min_length=1, max_length=1000)
+    machine_id: int = Field(ge=1)
+    description: str = Field(default="", max_length=500)
+
+
+class WorkspaceResponse(BaseModel):
+    id: int
+    name: str
+    path: str
+    owner_id: str
+    machine_id: int
+    description: str = ""
+    visibility: str = "private"
+    shared_with: list[str] = Field(default_factory=list)
+    created_at: str
+
+
+class WorkspaceListResponse(BaseModel):
+    workspaces: list[WorkspaceResponse]
+
+
+class TaskCreateRequest(BaseModel):
+    raw_request: str = Field(min_length=1)
+    target_machine_id: int = Field(ge=1)
+    target_workspace_id: int | None = None
+
+
+class TaskResponse(BaseModel):
+    id: int
+    task_id: str
+    type: str
+    status: str
+    owner_id: str
+    target_workspace_id: int | None = None
+    target_machine_id: int | None = None
+    raw_request: str
+    result: str = ""
+    logs: str = ""
+    created_agent_id: str | None = None
+    created_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    error: str = ""
+    current_step: int = 0
+    total_steps: int = 0
+
+
+class TaskListResponse(BaseModel):
+    tasks: list[TaskResponse]
+
+
+class PermissionGrantRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    permission: Permission = Permission.VIEW

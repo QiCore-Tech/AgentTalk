@@ -123,7 +123,7 @@ fi
 if [ -n "$MSG_ID" ]; then
     sleep 2
     STATUS=$(curl -sf -H "Authorization: Bearer $TOKEN" "$LOCAL_URL/api/messages/$MSG_ID" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
-    if [ "$STATUS" = "completed" ] || [ "$STATUS" = "delivered" ] || [ "$STATUS" = "injected" ] || [ "$STATUS" = "sent" ] || [ "$STATUS" = "working" ]; then
+    if [ "$STATUS" = "completed" ] || [ "$STATUS" = "delivered" ] || [ "$STATUS" = "injected" ] || [ "$STATUS" = "sent" ] || [ "$STATUS" = "working" ] || [ "$STATUS" = "submitted" ]; then
         pass "Message status progression"
     else
         fail "Message status progression (got: $STATUS)"

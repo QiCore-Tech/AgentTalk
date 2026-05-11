@@ -21,13 +21,24 @@ from agenttalk.hub.models import (
     AgentUpsertRequest,
     ErrorResponse,
     HealthResponse,
+    MachineCreateRequest,
+    MachineListResponse,
+    MachineResponse,
     MessageCreateRequest,
     MessageResponseUpdateRequest,
     MessageStatusUpdateRequest,
     PendingMessageResponse,
+    PermissionGrantRequest,
     RelayHeartbeatRequest,
     RelayRegisterRequest,
+    TaskCreateRequest,
+    TaskListResponse,
+    TaskResponse,
+    WorkspaceCreateRequest,
+    WorkspaceListResponse,
+    WorkspaceResponse,
 )
+from agenttalk.hub.auth import AuthManager, AuthContext, get_auth_context
 from agenttalk.hub.settings import HubSettings
 from agenttalk.hub.store import AgentFilters, HubStore
 from agenttalk.hub.pty_manager import pty_manager
@@ -42,6 +53,19 @@ def create_app(settings: HubSettings) -> FastAPI:
     store = HubStore(
         settings.database_path,
         heartbeat_ttl_seconds=settings.heartbeat_ttl_seconds,
+    )
+
+    # Initialize auth manager
+    auth_manager = AuthManager(
+        token=settings.token,
+        auth_mode=settings.auth_mode,
+        casdoor_endpoint=settings.casdoor_endpoint,
+        casdoor_client_id=settings.casdoor_client_id,
+        casdoor_client_secret=settings.casdoor_client_secret,
+        casdoor_app_name=settings.casdoor_app_name,
+        casdoor_org_name=settings.casdoor_org_name,
+        jwt_secret=settings.jwt_secret,
+        jwt_expiry_hours=settings.jwt_expiry_hours,
     )
 
     feishu_messenger: LarkMessenger | None = None
@@ -68,6 +92,7 @@ def create_app(settings: HubSettings) -> FastAPI:
         nonlocal feishu_messenger, feishu_service
         app.state.settings = settings
         app.state.store = store
+        app.state.auth_manager = auth_manager
         if settings.feishu_enable:
             feishu_messenger = LarkMessenger(settings.feishu_app_id, settings.feishu_app_secret)
             feishu_service = FeishuAgentTalkService(store, web_base_url=settings.public_base_url)
@@ -112,7 +137,15 @@ def create_app(settings: HubSettings) -> FastAPI:
             content={"error": {"code": "internal_error", "message": "Internal server error"}},
         )
 
+    def require_auth(authorization: str | None = Header(default=None)) -> AuthContext:
+        """Require any valid authentication (token, local JWT, or Casdoor)."""
+        auth = auth_manager.verify_bearer(authorization)
+        if auth is None:
+            raise api_error(401, "unauthorized", "Missing or invalid bearer token")
+        return auth
+
     def require_token(authorization: str | None = Header(default=None)) -> None:
+        """Legacy: require hub admin token only."""
         expected = f"Bearer {settings.token}"
         if authorization != expected:
             raise api_error(401, "unauthorized", "Missing or invalid bearer token")
@@ -537,6 +570,264 @@ def create_app(settings: HubSettings) -> FastAPI:
             message=body.get("message", "继续"),
         )
         return {"ok": True}
+
+    # ==================== Machine APIs ====================
+
+    # ==================== Auth APIs ====================
+
+    @app.get("/api/auth/me")
+    def get_current_user(
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Get current authenticated user info."""
+        return {
+            "user_id": auth.user_id,
+            "username": auth.username,
+            "display_name": auth.display_name,
+            "email": auth.email,
+            "avatar": auth.avatar,
+            "auth_method": auth.auth_method,
+        }
+
+    @app.get("/api/auth/casdoor/login")
+    def casdoor_login_url(
+        redirect_uri: str = "",
+    ) -> dict:
+        """Get Casdoor OAuth login URL."""
+        if settings.auth_mode not in ("casdoor", "both"):
+            raise api_error(400, "auth_mode_not_supported", "Casdoor auth is not enabled")
+        if not redirect_uri:
+            redirect_uri = f"{settings.public_base_url}/api/auth/casdoor/callback"
+        try:
+            url = auth_manager.get_casdoor_login_url(redirect_uri)
+            return {"login_url": url}
+        except Exception as exc:
+            raise api_error(500, "casdoor_error", str(exc))
+
+    @app.post("/api/auth/casdoor/callback")
+    def casdoor_callback(
+        code: str,
+        state: str = "",
+    ) -> dict:
+        """Handle Casdoor OAuth callback."""
+        if settings.auth_mode not in ("casdoor", "both"):
+            raise api_error(400, "auth_mode_not_supported", "Casdoor auth is not enabled")
+        try:
+            # Exchange code for token
+            token_data = auth_manager.exchange_casdoor_code(code)
+            access_token = token_data.get("access_token")
+            if not access_token:
+                raise api_error(400, "casdoor_error", "No access token in response")
+            
+            # Get user info
+            user_info = auth_manager.get_casdoor_user_info(access_token)
+            user_id = user_info.get("id", user_info.get("name", ""))
+            username = user_info.get("name", "")
+            display_name = user_info.get("displayName", username)
+            
+            # Create local JWT
+            jwt_token = auth_manager.create_local_jwt(user_id, username, display_name)
+            
+            return {
+                "token": jwt_token,
+                "user": {
+                    "user_id": user_id,
+                    "username": username,
+                    "display_name": display_name,
+                    "email": user_info.get("email", ""),
+                    "avatar": user_info.get("avatar", ""),
+                },
+            }
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise api_error(500, "casdoor_error", str(exc))
+
+    # ==================== Machine APIs ====================
+
+    @app.post("/api/machines/register-request")
+    def register_machine_request(
+        request: dict,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Relay calls this on first startup to get a registration URL."""
+        relay_machine_id = request.get("machine_id", "")
+        host_name = request.get("host_name", "")
+        if not relay_machine_id or not host_name:
+            raise api_error(400, "invalid_request", "machine_id and host_name are required")
+        
+        # Use auth_manager to create registration token
+        token = auth_manager.create_registration_token(relay_machine_id, host_name)
+        base_url = settings.public_base_url or ""
+        registration_url = f"{base_url}/auth/register?token={token}"
+        return {
+            "registration_token": token,
+            "registration_url": registration_url,
+            "expires_at": "2026-05-10T12:00:00Z",
+            "polling_interval": 5,
+        }
+
+    @app.post("/api/machines")
+    def create_machine(
+        data: MachineCreateRequest,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> MachineResponse:
+        """Create a machine record (called after user completes OAuth)."""
+        machine = hub_store.create_machine(
+            user_id=auth.user_id,
+            name=data.name,
+            host_name=data.host_name,
+            relay_machine_id=f"{data.host_name}:{data.name}",
+            capabilities=data.capabilities,
+        )
+        return MachineResponse(**machine)
+
+    @app.get("/api/machines")
+    def list_machines(
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> MachineListResponse:
+        """List machines for the current user."""
+        machines = hub_store.list_machines(user_id=auth.user_id)
+        return MachineListResponse(machines=[MachineResponse(**m) for m in machines])
+
+    @app.delete("/api/machines/{machine_id}")
+    def delete_machine(
+        machine_id: int,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Delete a machine and its associated workspaces."""
+        if hub_store.delete_machine(machine_id):
+            return {"deleted": True, "machine_id": machine_id}
+        raise api_error(404, "machine_not_found", f"Machine not found: {machine_id}")
+
+    # ==================== Workspace APIs ====================
+
+    @app.post("/api/workspaces")
+    def create_workspace(
+        request: WorkspaceCreateRequest,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> WorkspaceResponse:
+        """Create a new workspace."""
+        # Verify machine exists
+        machine = hub_store.get_machine(request.machine_id)
+        if machine is None:
+            raise api_error(404, "machine_not_found", f"Machine not found: {request.machine_id}")
+        workspace = hub_store.create_workspace(
+            name=request.name,
+            path=request.path,
+            owner_id=auth.user_id,
+            machine_id=request.machine_id,
+            description=request.description,
+        )
+        return WorkspaceResponse(**workspace)
+
+    @app.get("/api/workspaces")
+    def list_workspaces(
+        hub_store: HubStore = Depends(get_store),
+        machine_id: int | None = None,
+        auth: AuthContext = Depends(require_auth),
+    ) -> WorkspaceListResponse:
+        """List workspaces for the current user."""
+        workspaces = hub_store.list_workspaces(user_id=auth.user_id, machine_id=machine_id)
+        return WorkspaceListResponse(workspaces=[WorkspaceResponse(**w) for w in workspaces])
+
+    @app.delete("/api/workspaces/{workspace_id}")
+    def delete_workspace(
+        workspace_id: int,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Delete a workspace."""
+        if hub_store.delete_workspace(workspace_id):
+            return {"deleted": True, "workspace_id": workspace_id}
+        raise api_error(404, "workspace_not_found", f"Workspace not found: {workspace_id}")
+
+    # ==================== Task APIs ====================
+
+    @app.post("/api/tasks")
+    def create_task(
+        request: TaskCreateRequest,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> TaskResponse:
+        """Submit a new task (natural language)."""
+        import uuid
+        from datetime import datetime
+        task_id = f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        task = hub_store.create_task(
+            task_id=task_id,
+            owner_id=auth.user_id,
+            task_type="provision_agent",
+            target_machine_id=request.target_machine_id,
+            target_workspace_id=request.target_workspace_id,
+            raw_request=request.raw_request,
+            parsed_steps="[]",
+        )
+        return TaskResponse(**task)
+
+    @app.get("/api/tasks")
+    def list_tasks(
+        status: str | None = None,
+        limit: int = 50,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> TaskListResponse:
+        """List tasks for the current user."""
+        tasks = hub_store.list_tasks(user_id=auth.user_id, status=status, limit=limit)
+        return TaskListResponse(tasks=[TaskResponse(**t) for t in tasks])
+
+    @app.get("/api/tasks/{task_id}")
+    def get_task(
+        task_id: str,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> TaskResponse:
+        """Get task by ID."""
+        task = hub_store.get_task(task_id)
+        if task is None:
+            raise api_error(404, "task_not_found", f"Task not found: {task_id}")
+        return TaskResponse(**task)
+
+    # ==================== Agent Permission APIs ====================
+
+    @app.post("/api/agents/{short_id}/permissions")
+    def grant_permission(
+        short_id: str,
+        request: PermissionGrantRequest,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Grant permission to a user for an agent."""
+        if hub_store.grant_permission(short_id, request.user_id, request.permission, auth.user_id):
+            return {"ok": True}
+        raise api_error(400, "grant_failed", "Failed to grant permission")
+
+    @app.delete("/api/agents/{short_id}/permissions/{target_user_id}")
+    def revoke_permission(
+        short_id: str,
+        target_user_id: str,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Revoke permission from a user for an agent."""
+        if hub_store.revoke_permission(short_id, target_user_id):
+            return {"ok": True}
+        raise api_error(404, "permission_not_found", "Permission not found")
+
+    @app.get("/api/agents/{short_id}/permissions")
+    def list_permissions(
+        short_id: str,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """List all permissions for an agent."""
+        permissions = hub_store.list_permissions(short_id)
+        return {"permissions": permissions}
 
     if settings.web_dist_path and settings.web_dist_path.exists():
         app.mount("/", StaticFiles(directory=settings.web_dist_path, html=True), name="web")

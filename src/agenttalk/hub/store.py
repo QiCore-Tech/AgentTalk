@@ -948,14 +948,19 @@ class HubStore:
                     parsed_steps,
                     timeout_seconds,
                     now,
-                    len(json.loads(parsed_steps)) if parsed_steps else 0,
+                    len(json.loads(parsed_steps)) if parsed_steps and parsed_steps.strip() else 0,
                 ),
             )
         return {
             "id": cursor.lastrowid,
             "task_id": task_id,
+            "type": task_type,
             "status": "pending",
             "owner_id": owner_id,
+            "target_machine_id": target_machine_id,
+            "target_workspace_id": target_workspace_id,
+            "raw_request": raw_request,
+            "parsed_steps": parsed_steps,
             "created_at": now,
         }
 
