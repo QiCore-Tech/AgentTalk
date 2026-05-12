@@ -87,6 +87,24 @@ def test_register_relay_and_two_agents(tmp_path: Path) -> None:
     assert all(agent["status"] == "idle" for agent in agents)
 
 
+def test_register_relay_stores_lan_ip(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/api/relays/register",
+        headers=auth(),
+        json={
+            "machine_id": "machine-a",
+            "host_name": "host-a",
+            "user_name": "alice",
+            "lan_ip": "10.0.0.23",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["lan_ip"] == "10.0.0.23"
+
+
 def test_get_agent_detail(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     register_relay(client)

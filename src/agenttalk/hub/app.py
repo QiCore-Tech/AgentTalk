@@ -208,34 +208,34 @@ def create_app(settings: HubSettings) -> FastAPI:
             relay_host = relay.get("lan_ip") or relay.get("host_name", "")
             if relay_host:
                 tunnel_url = f"ws://{relay_host}:8788/tunnel/{short_id}"
-            try:
-                await websocket.send_text("\x1b[32m[Connecting to remote terminal...]\x1b[0m\r\n")
-                import websockets
-                async with websockets.connect(tunnel_url) as relay_ws:
-                    # Authenticate with relay
-                    await relay_ws.send(json.dumps({"token": settings.token}))
-                    await websocket.send_text("\x1b[32m[Connected to remote terminal]\x1b[0m\r\n")
+                try:
+                    await websocket.send_text("\x1b[32m[Connecting to remote terminal...]\x1b[0m\r\n")
+                    import websockets
+                    async with websockets.connect(tunnel_url) as relay_ws:
+                        # Authenticate with relay
+                        await relay_ws.send(json.dumps({"token": settings.token}))
+                        await websocket.send_text("\x1b[32m[Connected to remote terminal]\x1b[0m\r\n")
 
-                    # Proxy data between browser and relay
-                    async def browser_to_relay():
-                        while True:
-                            message = await websocket.receive()
-                            if "text" in message:
-                                await relay_ws.send(message["text"])
-                            elif "bytes" in message:
-                                await relay_ws.send(message["bytes"])
+                        # Proxy data between browser and relay
+                        async def browser_to_relay():
+                            while True:
+                                message = await websocket.receive()
+                                if "text" in message:
+                                    await relay_ws.send(message["text"])
+                                elif "bytes" in message:
+                                    await relay_ws.send(message["bytes"])
 
-                    async def relay_to_browser():
-                        async for data in relay_ws:
-                            if isinstance(data, bytes):
-                                await websocket.send_bytes(data)
-                            else:
-                                await websocket.send_text(data)
+                        async def relay_to_browser():
+                            async for data in relay_ws:
+                                if isinstance(data, bytes):
+                                    await websocket.send_bytes(data)
+                                else:
+                                    await websocket.send_text(data)
 
-                    await asyncio.gather(browser_to_relay(), relay_to_browser())
-                return
-            except Exception as exc:
-                await websocket.send_text(f"\x1b[33m[Remote tunnel unavailable, falling back to local: {exc}]\x1b[0m\r\n")
+                        await asyncio.gather(browser_to_relay(), relay_to_browser())
+                    return
+                except Exception as exc:
+                    await websocket.send_text(f"\x1b[33m[Remote tunnel unavailable, falling back to local: {exc}]\x1b[0m\r\n")
 
         # Fallback: local PTY (for agents on same machine as Hub)
         await websocket.send_text("\x1b[32m[Connected to PTY]\x1b[0m\r\n")

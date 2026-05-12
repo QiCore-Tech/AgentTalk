@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 import agenttalk.hub.app as hub_app_module
 from agenttalk.hub.app import create_app
 from agenttalk.hub.settings import HubSettings
+from agenttalk.hub.store import HubStore
 
 
 class FakeTmuxClient:
@@ -47,6 +48,38 @@ def register_target(client: TestClient) -> None:
             "status": "idle",
         },
     )
+
+
+def test_pty_websocket_falls_back_when_relay_has_no_host(tmp_path: Path) -> None:
+    database_path = tmp_path / "hub.sqlite3"
+    client = TestClient(create_app(HubSettings(database_path=database_path, token="test-token")))
+    client.post(
+        "/api/relays/register",
+        headers=auth(),
+        json={"machine_id": "machine-a", "host_name": "host-a", "user_name": "alice"},
+    )
+    store = HubStore(database_path)
+    with store.connect() as conn:
+        conn.execute("UPDATE relays SET host_name = '', lan_ip = '' WHERE machine_id = 'machine-a'")
+    client.put(
+        "/api/agents",
+        headers=auth(),
+        json={
+            "short_id": "alice-codex-api",
+            "machine_id": "machine-a",
+            "owner": "alice",
+            "kind": "codex",
+            "workspace": "/workspace/api",
+            "tmux_target": "agenttalk-e2e-api:0.0",
+            "receive_mode": "auto_submit",
+            "status": "idle",
+        },
+    )
+
+    with client.websocket_connect("/ws/pty/alice-codex-api") as websocket:
+        message = websocket.receive_text()
+
+    assert "[Connected to PTY]" in message
 
 
 def test_terminal_websocket_uses_registered_tmux_target(tmp_path: Path, monkeypatch) -> None:
