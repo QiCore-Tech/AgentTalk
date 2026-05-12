@@ -203,8 +203,11 @@ def create_app(settings: HubSettings) -> FastAPI:
 
         # Try to connect to relay tunnel first (for remote agents)
         relay = store.get_relay(agent.machine_id)
-        if relay and relay.get("host_name"):
-            tunnel_url = f"ws://{relay['host_name']}:8788/tunnel/{short_id}"
+        if relay:
+            # Prefer lan_ip (actual reachable IP), fallback to host_name
+            relay_host = relay.get("lan_ip") or relay.get("host_name", "")
+            if relay_host:
+                tunnel_url = f"ws://{relay_host}:8788/tunnel/{short_id}"
             try:
                 await websocket.send_text("\x1b[32m[Connecting to remote terminal...]\x1b[0m\r\n")
                 import websockets

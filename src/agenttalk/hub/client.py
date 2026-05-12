@@ -32,6 +32,7 @@ class HubClient:
                 "machine_id": config.machine_id,
                 "host_name": config.host_name,
                 "user_name": config.user_name,
+                "lan_ip": config.lan_ip,
             },
             timeout=10,
             retry_statuses=SAFE_POST_RETRY_STATUSES,

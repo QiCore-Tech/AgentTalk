@@ -19,6 +19,34 @@ def default_machine_id() -> str:
     return f"{socket.gethostname()}:{os.environ.get('USER', 'unknown')}"
 
 
+def default_lan_ip() -> str:
+    """Detect the primary LAN IP address."""
+    try:
+        # Try to get the IP used for default route
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2)
+        # Connect to a public DNS server to determine outgoing interface
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        try:
+            # Fallback: hostname -I
+            import subprocess
+            result = subprocess.run(
+                ["hostname", "-I"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip().split()[0]
+        except Exception:
+            pass
+        return ""
+
+
 class AgentBinding(BaseModel):
     short_id: str = Field(min_length=1)
     owner: str = Field(min_length=1)
@@ -43,6 +71,7 @@ class AgentTalkConfig(BaseModel):
     machine_id: str = Field(default_factory=default_machine_id)
     host_name: str = Field(default_factory=socket.gethostname)
     user_name: str = Field(default_factory=lambda: os.environ.get("USER", "unknown"))
+    lan_ip: str = Field(default_factory=default_lan_ip)
     agents: list[AgentBinding] = field(default_factory=list)
     llm: LLMConfig = Field(default_factory=LLMConfig)
 
