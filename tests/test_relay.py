@@ -12,6 +12,7 @@ from agenttalk.relay import (
     StaticTmuxClient,
     WatchState,
     build_injected_message,
+    classify_delivery_evidence,
     detect_errors,
     prepare_injected_message,
     strip_agenttalk_ack,
@@ -24,6 +25,7 @@ from agenttalk.tmux import TmuxPane
 @pytest.fixture(autouse=True)
 def isolate_watch_state(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("AGENTTALK_WATCH_STATE_PATH", str(tmp_path / "agenttalk-state" / "watch_states.json"))
+    monkeypatch.setenv("AGENTTALK_DELIVERY_TICKET_DIR", str(tmp_path / "agenttalk-state" / "delivery"))
 
 
 @dataclass
@@ -95,6 +97,7 @@ class RecordingTmuxClient(StaticTmuxClient):
     def __init__(self, panes: list[TmuxPane]) -> None:
         super().__init__(panes)
         self.injections: list[tuple[str, str, bool]] = []
+        self.sent_keys: list[tuple[str, str]] = []
         self.injection_result = InjectionResult(
             pasted=True,
             submit_requested=True,
@@ -106,6 +109,9 @@ class RecordingTmuxClient(StaticTmuxClient):
     def inject_text(self, target: str, text: str, *, submit: bool) -> InjectionResult:
         self.injections.append((target, text, submit))
         return self.injection_result
+
+    def send_key(self, target: str, key: str) -> None:
+        self.sent_keys.append((target, key))
 
 
 class FailingCaptureTmuxClient(RecordingTmuxClient):
@@ -457,6 +463,170 @@ def test_relay_process_next_message_injects_auto_submit() -> None:
     assert tmux.injections[0][0] == "dev:0.1"
     assert tmux.injections[0][2] is True
     assert fake_hub.status_updates == [("msg-1", MessageStatus.SUBMITTED, "")]
+
+
+def test_relay_process_next_message_creates_delivery_ticket(tmp_path) -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+                receive_mode=ReceiveMode.AUTO_SUBMIT,
+            )
+        ],
+    )
+    fake_hub = FakeHubClient(
+        next_payload={
+            "message_id": "msg-1",
+            "sender": "bob",
+            "target": "alice-codex-api",
+            "body": "Please review.",
+            "done_marker": "<<<AGENTTALK_DONE:msg-1>>>",
+        }
+    )
+    tmux = RecordingTmuxClient([])
+    ticket_dir = tmp_path / "delivery"
+
+    AgentTalkRelay(
+        config,
+        hub_client=fake_hub,
+        tmux_client=tmux,
+        delivery_ticket_dir=ticket_dir,
+    ).process_next_message_once()
+
+    ticket = ticket_dir / "msg-1.json"
+    assert ticket.exists()
+    data = ticket.read_text(encoding="utf-8")
+    assert '"message_id": "msg-1"' in data
+    assert '"status": "submitted_visible"' in data
+
+
+def test_delivery_ticket_recovery_sends_tab_for_busy_codex_queue(monkeypatch, tmp_path) -> None:
+    import agenttalk.relay as relay_module
+
+    monkeypatch.setattr(relay_module, "DELIVERY_RECOVERY_GRACE_SECONDS", 0)
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient([])
+    tmux.captures["dev:0.1"] = "\n".join(
+        [
+            "Working (esc to interrupt)",
+            "› [AgentTalk Message] message_id: msg-1 from: bob to: alice-codex-api.",
+            "tab to queue message",
+        ]
+    )
+    relay = AgentTalkRelay(
+        config,
+        hub_client=fake_hub,
+        tmux_client=tmux,
+        delivery_ticket_dir=tmp_path / "delivery",
+    )
+    relay._save_delivery_ticket(
+        relay_module.DeliveryTicket(
+            message_id="msg-1",
+            sender="bob",
+            target="alice-codex-api",
+            tmux_target="dev:0.1",
+            done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+            status="submit_attempted",
+            submit_requested=True,
+        )
+    )
+
+    recovered = relay.recover_delivery_tickets_once()
+
+    assert recovered == 1
+    assert tmux.sent_keys == [("dev:0.1", "Tab")]
+    assert relay.delivery_tickets["msg-1"].status == "submit_retried"
+    assert relay.delivery_tickets["msg-1"].recovery_attempts == 1
+
+
+def test_delivery_ticket_recovery_fails_closed_after_max_attempts(monkeypatch, tmp_path) -> None:
+    import agenttalk.dlq as dlq_module
+    import agenttalk.relay as relay_module
+
+    dlq_path = tmp_path / "dlq.json"
+    monkeypatch.setattr(dlq_module, "default_dlq_path", lambda: dlq_path)
+    monkeypatch.setattr(relay_module, "record_dead_letter", dlq_module.record_dead_letter)
+    monkeypatch.setattr(relay_module, "DELIVERY_RECOVERY_GRACE_SECONDS", 0)
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient([])
+    tmux.captures["dev:0.1"] = "› [AgentTalk Message] message_id: msg-1 from: bob to: alice-codex-api."
+    relay = AgentTalkRelay(
+        config,
+        hub_client=fake_hub,
+        tmux_client=tmux,
+        delivery_ticket_dir=tmp_path / "delivery",
+    )
+    relay._save_delivery_ticket(
+        relay_module.DeliveryTicket(
+            message_id="msg-1",
+            sender="bob",
+            target="alice-codex-api",
+            tmux_target="dev:0.1",
+            done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+            status="submit_retried",
+            submit_requested=True,
+            recovery_attempts=relay_module.DELIVERY_RECOVERY_MAX_ATTEMPTS,
+        )
+    )
+
+    recovered = relay.recover_delivery_tickets_once()
+
+    assert recovered == 0
+    assert tmux.sent_keys == []
+    assert fake_hub.status_updates == [("msg-1", MessageStatus.SUBMIT_UNCONFIRMED, relay.delivery_tickets["msg-1"].last_error)]
+    records = dlq_module.load_dead_letters(dlq_path)
+    assert records[0]["message_id"] == "msg-1"
+    assert records[0]["reason"] == "delivery_ticket_submit_unconfirmed"
+
+
+def test_classify_delivery_evidence_distinguishes_ack_active_and_pending() -> None:
+    assert (
+        classify_delivery_evidence(
+            "› [AgentTalk Message] message_id: msg-1\nAGENTTALK_ACK:msg-1",
+            "msg-1",
+        )
+        == "acked"
+    )
+    assert (
+        classify_delivery_evidence(
+            "› [AgentTalk Message] message_id: msg-1\n✻ Thinking about task",
+            "msg-1",
+        )
+        == "submitted_visible"
+    )
+    assert (
+        classify_delivery_evidence(
+            "Working (esc to interrupt)\n› [AgentTalk Message] message_id: msg-1\ntab to queue message",
+            "msg-1",
+        )
+        == "pending_input"
+    )
 
 
 def test_relay_persists_watch_before_status_update_failure(tmp_path) -> None:

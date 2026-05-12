@@ -7,6 +7,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from agenttalk.config import AgentTalkConfig, default_config_path, load_config
@@ -18,6 +19,8 @@ from agenttalk.process_manager import (
     ManagedProcess,
     ProcessManager,
     TmuxProcessManager,
+    _tail_shows_active_agent_submission,
+    _tail_shows_codex_queue_prompt,
     is_process_alive,
 )
 
@@ -28,6 +31,15 @@ logger = logging.getLogger(__name__)
 
 INLINE_INJECTION_MAX_CHARS = 1400
 INLINE_INJECTION_MAX_LINES = 8
+DELIVERY_RECOVERY_GRACE_SECONDS = 5.0
+DELIVERY_RECOVERY_MAX_ATTEMPTS = 3
+
+DELIVERY_TERMINAL_STATUSES = {
+    "acked",
+    "completed",
+    "failed",
+    "submit_unconfirmed",
+}
 
 # Optional LLM-based status analysis
 try:
@@ -63,6 +75,52 @@ class WatchState:
             target=str(payload["target"]),
             baseline=str(payload["baseline"]),
             done_marker=str(payload["done_marker"]),
+        )
+
+
+@dataclass
+class DeliveryTicket:
+    message_id: str
+    sender: str
+    target: str
+    tmux_target: str
+    done_marker: str
+    status: str
+    submit_requested: bool
+    recovery_attempts: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+    last_error: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "message_id": self.message_id,
+            "sender": self.sender,
+            "target": self.target,
+            "tmux_target": self.tmux_target,
+            "done_marker": self.done_marker,
+            "status": self.status,
+            "submit_requested": self.submit_requested,
+            "recovery_attempts": self.recovery_attempts,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "last_error": self.last_error,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> DeliveryTicket:
+        return cls(
+            message_id=str(payload["message_id"]),
+            sender=str(payload.get("sender", "")),
+            target=str(payload.get("target", "")),
+            tmux_target=str(payload["tmux_target"]),
+            done_marker=str(payload.get("done_marker", "")),
+            status=str(payload.get("status", "created")),
+            submit_requested=bool(payload.get("submit_requested", True)),
+            recovery_attempts=int(payload.get("recovery_attempts", 0)),
+            created_at=str(payload.get("created_at", "")),
+            updated_at=str(payload.get("updated_at", "")),
+            last_error=str(payload.get("last_error", "")),
         )
 
 
@@ -185,12 +243,15 @@ class AgentTalkRelay:
         hub_client: HubClient,
         tmux_client: ProcessManager,
         watch_state_path: Path | None = None,
+        delivery_ticket_dir: Path | None = None,
     ) -> None:
         self.config = config
         self.hub_client = hub_client
         self.tmux_client = tmux_client
         self.watch_state_path = watch_state_path or default_watch_state_path()
         self.watch_states: dict[str, WatchState] = self._load_watch_states()
+        self.delivery_ticket_dir = delivery_ticket_dir or default_delivery_ticket_dir()
+        self.delivery_tickets: dict[str, DeliveryTicket] = self._load_delivery_tickets()
         self.health_states: dict[str, AgentHealthState] = {}
         # Initialize LLM analyzer if available and enabled in config
         self._llm_analyzer = None
@@ -238,6 +299,47 @@ class AgentTalkRelay:
             for message_id, state in sorted(self.watch_states.items())
         }
         self.watch_state_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def _load_delivery_tickets(self) -> dict[str, DeliveryTicket]:
+        loaded: dict[str, DeliveryTicket] = {}
+        try:
+            paths = list(self.delivery_ticket_dir.glob("*.json"))
+        except OSError:
+            return loaded
+        for path in paths:
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(raw, dict):
+                continue
+            try:
+                ticket = DeliveryTicket.from_dict(raw)
+            except (KeyError, TypeError, ValueError):
+                continue
+            loaded[ticket.message_id] = ticket
+        return loaded
+
+    def _save_delivery_ticket(self, ticket: DeliveryTicket) -> None:
+        self.delivery_ticket_dir.mkdir(parents=True, exist_ok=True)
+        ticket.updated_at = _now_utc()
+        if not ticket.created_at:
+            ticket.created_at = ticket.updated_at
+        self._delivery_ticket_path(ticket.message_id).write_text(
+            json.dumps(ticket.to_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        self.delivery_tickets[ticket.message_id] = ticket
+
+    def _delete_delivery_ticket(self, message_id: str) -> None:
+        self.delivery_tickets.pop(message_id, None)
+        try:
+            self._delivery_ticket_path(message_id).unlink()
+        except FileNotFoundError:
+            pass
+
+    def _delivery_ticket_path(self, message_id: str) -> Path:
+        return self.delivery_ticket_dir / f"{_safe_message_id(message_id)}.json"
 
     def sync_once(self) -> RelaySyncResult:
         self.hub_client.register_relay(self.config)
@@ -358,7 +460,12 @@ class AgentTalkRelay:
         # cause the Hub to derive every agent on this machine as OFFLINE even when
         # the panes are healthy and producing work).
         self._safe_heartbeat()
-        for step in (self.sync_once, self.process_next_message_once, self.update_watches_once):
+        for step in (
+            self.sync_once,
+            self.process_next_message_once,
+            self.recover_delivery_tickets_once,
+            self.update_watches_once,
+        ):
             try:
                 step()
             except HubRequestError as exc:
@@ -460,8 +567,114 @@ class AgentTalkRelay:
             done_marker=message["done_marker"],
         )
         self._save_watch_states()
+        self._save_delivery_ticket(
+            DeliveryTicket(
+                message_id=message["message_id"],
+                sender=message["sender"],
+                target=message["target"],
+                tmux_target=binding.tmux_target,
+                done_marker=message["done_marker"],
+                status=_delivery_status_from_message_status(injected_status),
+                submit_requested=submit,
+                recovery_attempts=0,
+            )
+        )
         self.hub_client.update_message_status(message["message_id"], injected_status)
         return True
+
+    def recover_delivery_tickets_once(self) -> int:
+        recovered = 0
+        now = time.time()
+        for message_id, ticket in list(self.delivery_tickets.items()):
+            if ticket.status in DELIVERY_TERMINAL_STATUSES:
+                continue
+            if not ticket.submit_requested:
+                continue
+            if ticket.created_at and now - _parse_utc_timestamp(ticket.created_at) < DELIVERY_RECOVERY_GRACE_SECONDS:
+                continue
+            try:
+                current_message = self.hub_client.get_message(message_id)
+            except Exception:
+                current_message = None
+            if current_message and current_message.get("status") in {
+                MessageStatus.COMPLETED.value,
+                MessageStatus.FAILED.value,
+                MessageStatus.TIMEOUT.value,
+            }:
+                ticket.status = str(current_message.get("status"))
+                self._save_delivery_ticket(ticket)
+                continue
+            try:
+                output = self.tmux_client.capture_output(ticket.tmux_target, lines=120)
+            except Exception as exc:
+                ticket.status = "failed"
+                ticket.last_error = f"delivery target unavailable: {ticket.tmux_target}: {exc}"
+                self._save_delivery_ticket(ticket)
+                try:
+                    self.hub_client.update_message_status(message_id, MessageStatus.FAILED, ticket.last_error)
+                except Exception:
+                    logger.exception("AgentTalk relay failed to mark delivery ticket %s failed", message_id)
+                continue
+            evidence = classify_delivery_evidence(output, message_id)
+            if evidence in {"acked", "completed"}:
+                ticket.status = evidence
+                self._save_delivery_ticket(ticket)
+                continue
+            if evidence == "submitted_visible":
+                if ticket.status != "submitted_visible":
+                    ticket.status = "submitted_visible"
+                    self._save_delivery_ticket(ticket)
+                    try:
+                        self.hub_client.update_message_status(message_id, MessageStatus.SUBMITTED)
+                    except Exception:
+                        logger.exception("AgentTalk relay failed to mark delivery ticket %s submitted", message_id)
+                continue
+            if evidence != "pending_input":
+                continue
+            if ticket.recovery_attempts >= DELIVERY_RECOVERY_MAX_ATTEMPTS:
+                ticket.status = "submit_unconfirmed"
+                ticket.last_error = (
+                    f"AgentTalk message still appears in input after "
+                    f"{ticket.recovery_attempts} recovery attempts"
+                )
+                self._save_delivery_ticket(ticket)
+                try:
+                    self.hub_client.update_message_status(
+                        message_id,
+                        MessageStatus.SUBMIT_UNCONFIRMED,
+                        ticket.last_error,
+                    )
+                except Exception:
+                    logger.exception("AgentTalk relay failed to mark delivery ticket %s unconfirmed", message_id)
+                record_dead_letter(
+                    message={
+                        "message_id": ticket.message_id,
+                        "sender": ticket.sender,
+                        "target": ticket.target,
+                        "body": "",
+                    },
+                    reason="delivery_ticket_submit_unconfirmed",
+                    error=ticket.last_error,
+                )
+                continue
+            key = "Tab" if _tail_shows_codex_queue_prompt(output) else "Enter"
+            try:
+                self.tmux_client.send_key(ticket.tmux_target, key)
+            except Exception as exc:
+                ticket.status = "failed"
+                ticket.last_error = f"delivery recovery send-key {key} failed: {exc}"
+                self._save_delivery_ticket(ticket)
+                try:
+                    self.hub_client.update_message_status(message_id, MessageStatus.FAILED, ticket.last_error)
+                except Exception:
+                    logger.exception("AgentTalk relay failed to report delivery recovery failure for %s", message_id)
+                continue
+            ticket.recovery_attempts += 1
+            ticket.status = "submit_retried"
+            ticket.last_error = f"sent recovery key: {key}"
+            self._save_delivery_ticket(ticket)
+            recovered += 1
+        return recovered
 
     def update_watches_once(self) -> int:
         completed: list[str] = []
@@ -513,8 +726,10 @@ class AgentTalkRelay:
             done, response_text = _evaluate_done_marker(response_delta, state.done_marker)
             self.hub_client.update_message_response(message_id, response_text, completed=done)
             if done:
+                self._mark_delivery_ticket(message_id, "completed")
                 completed.append(message_id)
             elif acked:
+                self._mark_delivery_ticket(message_id, "acked")
                 self.hub_client.update_message_status(message_id, MessageStatus.ACKED)
             else:
                 self.hub_client.update_message_status(message_id, MessageStatus.WORKING)
@@ -524,6 +739,15 @@ class AgentTalkRelay:
         if completed:
             self._save_watch_states()
         return updates
+
+    def _mark_delivery_ticket(self, message_id: str, status: str, error: str = "") -> None:
+        ticket = self.delivery_tickets.get(message_id)
+        if ticket is None:
+            return
+        ticket.status = status
+        if error:
+            ticket.last_error = error
+        self._save_delivery_ticket(ticket)
 
     def sync_context_once(self, *, lines: int = 200) -> int:
         count = 0
@@ -553,6 +777,13 @@ def default_message_spool_dir() -> Path:
     return Path.home() / ".agenttalk" / "inbox"
 
 
+def default_delivery_ticket_dir() -> Path:
+    configured = os.environ.get("AGENTTALK_DELIVERY_TICKET_DIR", "").strip()
+    if configured:
+        return Path(configured)
+    return default_config_path().parent / "delivery"
+
+
 def default_watch_state_path() -> Path:
     configured = os.environ.get("AGENTTALK_WATCH_STATE_PATH", "").strip()
     if configured:
@@ -560,9 +791,17 @@ def default_watch_state_path() -> Path:
     return default_config_path().parent / "watch_states.json"
 
 
-def _safe_spool_filename(message_id: str) -> str:
+def _now_utc() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _safe_message_id(message_id: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", message_id).strip("._")
-    return f"{safe or 'message'}.md"
+    return safe or "message"
+
+
+def _safe_spool_filename(message_id: str) -> str:
+    return f"{_safe_message_id(message_id)}.md"
 
 
 def _collapse_for_inline(text: str, *, limit: int = 900) -> str:
@@ -666,6 +905,75 @@ def output_delta(baseline: str, current: str) -> str:
         if baseline_lines[-size:] == current_lines[:size]:
             return "\n".join(current_lines[size:])
     return current
+
+
+def classify_delivery_evidence(output: str, message_id: str) -> str:
+    """Classify local pane evidence for a delivered AgentTalk message."""
+
+    if f"<<<AGENTTALK_DONE:{message_id}>>>" in output:
+        return "completed"
+    if f"AGENTTALK_ACK:{message_id}" in output:
+        return "acked"
+    if _tail_shows_message_pending_input(output, message_id):
+        return "pending_input"
+    if _tail_shows_message_active_after_marker(output, message_id):
+        return "submitted_visible"
+    return "unknown"
+
+
+def _tail_shows_message_pending_input(output: str, message_id: str) -> bool:
+    tail_lines = output.splitlines()[-30:]
+    marker_index = _last_message_line_index(tail_lines, message_id)
+    if marker_index is None:
+        return False
+    if marker_index < max(len(tail_lines) - 12, 0):
+        return False
+    after_marker = tail_lines[marker_index + 1 :]
+    if f"AGENTTALK_ACK:{message_id}" in "\n".join(after_marker):
+        return False
+    if _tail_shows_active_agent_submission("\n".join(tail_lines[marker_index + 1 :])):
+        return False
+    prompt_window = tail_lines[max(marker_index - 2, 0) : marker_index + 1]
+    if any(line.lstrip().startswith(("›", ">")) for line in prompt_window):
+        return True
+    return marker_index >= len(tail_lines) - 4
+
+
+def _tail_shows_message_active_after_marker(output: str, message_id: str) -> bool:
+    tail_lines = output.splitlines()[-30:]
+    marker_index = _last_message_line_index(tail_lines, message_id)
+    if marker_index is None:
+        return False
+    if marker_index < max(len(tail_lines) - 12, 0):
+        return False
+    return _tail_shows_active_agent_submission("\n".join(tail_lines[marker_index + 1 :]))
+
+
+def _last_message_line_index(lines: list[str], message_id: str) -> int | None:
+    marker_index: int | None = None
+    for index, line in enumerate(lines):
+        if message_id in line:
+            marker_index = index
+    return marker_index
+
+
+def _delivery_status_from_message_status(status: MessageStatus) -> str:
+    if status == MessageStatus.SUBMITTED:
+        return "submitted_visible"
+    if status == MessageStatus.SUBMIT_UNCONFIRMED:
+        return "submit_attempted"
+    if status == MessageStatus.INJECTED_PASTE_ONLY:
+        return "pasted"
+    if status == MessageStatus.FAILED:
+        return "failed"
+    return "pasted"
+
+
+def _parse_utc_timestamp(value: str) -> float:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def strip_injected_message_echo(delta: str, done_marker: str) -> str:

@@ -52,6 +52,10 @@ class ProcessManager(abc.ABC):
         """向目标进程注入文本。"""
 
     @abc.abstractmethod
+    def send_key(self, target: str, key: str) -> None:
+        """向目标进程发送一个控制键。"""
+
+    @abc.abstractmethod
     def capture_output(self, target: str, *, lines: int = 300) -> str:
         """捕获目标进程最近输出。"""
 
@@ -207,6 +211,16 @@ class TmuxProcessManager(ProcessManager):
         except Exception:
             return False, False, SUBMIT_MAX_ATTEMPTS
         return False, _tail_shows_pending_agenttalk_input(output), SUBMIT_MAX_ATTEMPTS
+
+    def send_key(self, target: str, key: str) -> None:
+        proc = subprocess.run(
+            ["tmux", "send-keys", "-t", target, key],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "tmux send-key failed")
 
     def _wait_for_active_submission(self, target: str, *, timeout: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -367,6 +381,16 @@ class SubprocessProcessManager(ProcessManager):
             pending_input_detected=not submit,
             attempts=1 if submit else 0,
         )
+
+    def send_key(self, target: str, key: str) -> None:
+        proc = self._procs.get(target)
+        if proc is None or proc.stdin is None:
+            raise RuntimeError(f"Process stdin not available: {target}")
+        if key == "Enter":
+            proc.stdin.write(os.linesep)
+        else:
+            raise RuntimeError(f"Unsupported key for subprocess target {target}: {key}")
+        proc.stdin.flush()
 
     def capture_output(self, target: str, *, lines: int = 300) -> str:
         log_file = self._log_path(target)
