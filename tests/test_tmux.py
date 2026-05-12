@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import agenttalk.process_manager as process_manager
 from agenttalk.process_manager import _detect_agent_kind as detect_agent_kind
 from agenttalk.process_manager import _tail_shows_active_agent_submission
+from agenttalk.process_manager import _tail_shows_codex_queue_prompt
 from agenttalk.process_manager import _tail_shows_pending_agenttalk_input
 from agenttalk.process_manager import TmuxProcessManager
 
@@ -119,10 +120,72 @@ def test_inject_text_auto_submit_retries_when_agenttalk_input_still_pending(monk
     ] * process_manager.SUBMIT_MAX_ATTEMPTS
 
 
+def test_inject_text_auto_submit_queues_busy_codex_input_with_tab(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    captures = iter(
+        [
+            "\n".join(
+                [
+                    "Working (esc to interrupt)",
+                    "› [AgentTalk Message] message_id: msg-1 from: a to: b",
+                    "tab to queue message",
+                ]
+            ),
+            "",
+        ]
+    )
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(process_manager.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        TmuxProcessManager,
+        "_wait_for_active_submission",
+        lambda self, target: False,
+    )
+    monkeypatch.setattr(
+        TmuxProcessManager,
+        "capture_output",
+        lambda self, target, lines=80: next(captures),
+    )
+    monkeypatch.setattr(process_manager.time, "sleep", lambda _seconds: None)
+
+    result = TmuxProcessManager().inject_text("dev:0.1", "large\nmessage", submit=True)
+
+    submit_calls = [
+        call for call in calls if call[:4] == ["tmux", "send-keys", "-t", "dev:0.1"]
+    ]
+    assert submit_calls == [
+        ["tmux", "send-keys", "-t", "dev:0.1", "Enter"],
+        ["tmux", "send-keys", "-t", "dev:0.1", "Tab"],
+    ]
+    assert result.submit_confirmed
+    assert result.attempts == 2
+
+
 def test_active_submission_detection_rejects_idle_completed_spinner() -> None:
     assert not _tail_shows_active_agent_submission("✻ Baked for 4m 42s")
     assert _tail_shows_active_agent_submission("✻ Thinking about task")
     assert _tail_shows_active_agent_submission("Working (esc to interrupt)")
+    assert not _tail_shows_active_agent_submission(
+        "\n".join(
+            [
+                "Working (esc to interrupt)",
+                "› [AgentTalk Message] message_id: msg-1 from: a to: b",
+                "tab to queue message",
+            ]
+        )
+    )
+    assert _tail_shows_active_agent_submission(
+        "\n".join(
+            [
+                "› [AgentTalk Message] message_id: msg-1 from: a to: b",
+                "✻ Thinking about task",
+            ]
+        )
+    )
 
 
 def test_pending_agenttalk_input_detection_is_tail_scoped() -> None:
@@ -144,4 +207,22 @@ def test_pending_agenttalk_input_detection_is_tail_scoped() -> None:
     assert _tail_shows_pending_agenttalk_input(
         "› [Pasted Content 1023 chars] exact marker on its own line: "
         "<<<AGENTTALK_DONE:msg-1>>>"
+    )
+    assert _tail_shows_codex_queue_prompt("› [AgentTalk Message] msg\n tab to queue message")
+    assert _tail_shows_pending_agenttalk_input(
+        "\n".join(
+            [
+                "Working (esc to interrupt)",
+                "› [AgentTalk Message] message_id: msg-1 from: a to: b",
+                "tab to queue message",
+            ]
+        )
+    )
+    assert not _tail_shows_pending_agenttalk_input(
+        "\n".join(
+            [
+                "› [AgentTalk Message] message_id: msg-1 from: a to: b",
+                "✻ Thinking about task",
+            ]
+        )
     )
