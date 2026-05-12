@@ -122,6 +122,8 @@ PAUSE_PATTERNS = [
     "rate limited",
     "service temporarily unavailable",
     "model is overloaded",
+    "at capacity",
+    "capacity exceeded",
     "context length exceeded",
     "token limit",
     "max tokens",
