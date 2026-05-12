@@ -775,6 +775,17 @@ def daemon_start(
     config = load_config(config_path)
     if not config.token:
         raise typer.BadParameter("Config token is required. Run agenttalk setup first.")
+
+    # Always refresh lan_ip on startup to handle network changes
+    from agenttalk.config import default_lan_ip
+
+    config.lan_ip = default_lan_ip()
+    if config.lan_ip:
+        typer.echo(f"Detected LAN IP: {config.lan_ip}")
+    else:
+        typer.echo("Warning: Could not detect LAN IP. Remote Live Terminal may not work.")
+        typer.echo("Set AGENTTALK_LAN_IP environment variable to override.")
+
     relay = AgentTalkRelay(
         config,
         hub_client=HubClient(config.hub_url, config.token),
@@ -788,11 +799,12 @@ def daemon_start(
             raise typer.Exit(1) from exc
         typer.echo(f"Synced {result.upserted} agents ({result.online} online, {result.offline} offline).")
         return
-    if os.environ.get("AGENTTALK_TUNNEL_ENABLE", "").lower() in {"1", "true", "yes", "on"}:
-        from agenttalk.tunnel_server import start_tunnel_server
 
-        tunnel_server = start_tunnel_server(config, config_path=config_path or default_config_path())
-        typer.echo(f"Tunnel server started on {tunnel_server.host}:{tunnel_server.port}")
+    # Start tunnel server for remote Live Terminal access (always enabled)
+    from agenttalk.tunnel_server import start_tunnel_server
+
+    tunnel_server = start_tunnel_server(config, config_path=config_path or default_config_path())
+    typer.echo(f"Tunnel server started on {tunnel_server.host}:{tunnel_server.port}")
 
     relay.run_forever(interval_seconds=interval, config_path=config_path or default_config_path())
 

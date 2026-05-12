@@ -20,34 +20,58 @@ def default_machine_id() -> str:
 
 
 def default_lan_ip() -> str:
-    """Detect the primary LAN IP address."""
-    configured = os.environ.get("AGENTTALK_LAN_IP", "").strip()
-    if configured:
-        return configured
+    """Detect the primary LAN IP address.
+
+    Priority:
+    1. AGENTTALK_LAN_IP environment variable (user override)
+    2. First non-Docker, non-loopback IP from hostname -I
+    3. IP from outgoing socket (may return Docker bridge IP)
+    """
+    # 1. Environment override
+    env_ip = os.environ.get("AGENTTALK_LAN_IP", "").strip()
+    if env_ip:
+        return env_ip
+
+    # 2. Try hostname -I and filter Docker/loopback IPs
     try:
-        # Try to get the IP used for default route
+        import subprocess
+        result = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            all_ips = result.stdout.strip().split()
+            for ip in all_ips:
+                # Skip loopback
+                if ip.startswith("127."):
+                    continue
+                # Skip Docker bridge networks (172.17.x.x is docker0 default)
+                if ip.startswith("172.17."):
+                    continue
+                # Skip other common Docker networks
+                if ip.startswith("172.18.") or ip.startswith("172.19.") or ip.startswith("172.20."):
+                    continue
+                # Skip Docker Swarm / custom networks
+                if ip.startswith("10.0.") or ip.startswith("10.1."):
+                    continue
+                return ip
+    except Exception:
+        pass
+
+    # 3. Fallback: outgoing socket (may return Docker IP)
+    try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(2)
-        # Connect to a public DNS server to determine outgoing interface
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
         s.close()
         return ip
     except Exception:
-        try:
-            # Fallback: hostname -I
-            import subprocess
-            result = subprocess.run(
-                ["hostname", "-I"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                return result.stdout.strip().split()[0]
-        except Exception:
-            pass
-        return ""
+        pass
+
+    return ""
 
 
 class AgentBinding(BaseModel):
