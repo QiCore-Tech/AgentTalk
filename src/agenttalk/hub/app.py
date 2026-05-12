@@ -211,7 +211,7 @@ def create_app(settings: HubSettings) -> FastAPI:
                 try:
                     await websocket.send_text("\x1b[32m[Connecting to remote terminal...]\x1b[0m\r\n")
                     import websockets
-                    async with websockets.connect(tunnel_url) as relay_ws:
+                    async with websockets.connect(tunnel_url, open_timeout=3, close_timeout=1) as relay_ws:
                         # Authenticate with relay
                         await relay_ws.send(json.dumps({"token": settings.token}))
                         await websocket.send_text("\x1b[32m[Connected to remote terminal]\x1b[0m\r\n")

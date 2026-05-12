@@ -21,6 +21,9 @@ def default_machine_id() -> str:
 
 def default_lan_ip() -> str:
     """Detect the primary LAN IP address."""
+    configured = os.environ.get("AGENTTALK_LAN_IP", "").strip()
+    if configured:
+        return configured
     try:
         # Try to get the IP used for default route
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from agenttalk.config import default_lan_ip
 from agenttalk.hub.app import create_app
 from agenttalk.hub.settings import HubSettings
 
@@ -103,6 +104,12 @@ def test_register_relay_stores_lan_ip(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["lan_ip"] == "10.0.0.23"
+
+
+def test_default_lan_ip_can_be_overridden(monkeypatch) -> None:
+    monkeypatch.setenv("AGENTTALK_LAN_IP", "10.9.8.7")
+
+    assert default_lan_ip() == "10.9.8.7"
 
 
 def test_get_agent_detail(tmp_path: Path) -> None:
