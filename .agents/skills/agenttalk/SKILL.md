@@ -123,8 +123,10 @@ If an AgentTalk message appears in this terminal:
 
 1. Treat it as a direct task from the sender.
 2. If the prompt says the full task is stored in a local file, read that file before answering.
-3. Answer in the same terminal.
-4. When done, print the exact completion marker included in the message on its own line.
+3. If the prompt asks for an `AGENTTALK_ACK:<message-id>` line, include that line once at the start of your actual response.
+4. Do not stop after the ACK line. Continue with the requested task immediately.
+5. Answer in the same terminal.
+6. When done, print the exact completion marker included in the message on its own line.
 
 Do not invent a marker. Use the marker from the received message exactly.
 

@@ -599,9 +599,10 @@ def prepare_injected_message(
         return (
             f"[AgentTalk Message] message_id: {message_id} from: {sender} to: {target}. "
             f"Task: {task} "
-            "First print this exact acknowledgement on its own line: "
+            "Execute the task fully. At the start of your actual response, include this exact acknowledgement line once: "
             f"AGENTTALK_ACK:{message_id}. "
-            "When done, print this exact marker on its own line: "
+            "Do not stop after the ACK line; continue with the task immediately. "
+            "When the task is fully complete, print this exact marker on its own line: "
             f"{done_marker}"
         )
 
@@ -623,9 +624,10 @@ def prepare_injected_message(
         f"Full task is stored at {spool_path} (sha256:{digest}). "
         "Read that file first, then perform the task. "
         f"Preview: {preview} "
-        "First print this exact acknowledgement on its own line: "
+        "After reading the file, begin your actual response with this exact acknowledgement line once: "
         f"AGENTTALK_ACK:{message_id}. "
-        "When done, print this exact marker on its own line: "
+        "Do not stop after the ACK line; continue with the task immediately. "
+        "When the task is fully complete, print this exact marker on its own line: "
         f"{done_marker}"
     )
 
@@ -641,10 +643,11 @@ def build_injected_message(*, message_id: str, sender: str, target: str, body: s
             "Task:",
             body.strip(),
             "",
-            "First print this exact acknowledgement on its own line:",
+            "Begin your actual response with this exact acknowledgement line once:",
             f"AGENTTALK_ACK:{message_id}",
+            "Do not stop after the ACK line; continue with the task immediately.",
             "",
-            "When done, print this exact marker on its own line:",
+            "When the task is fully complete, print this exact marker on its own line:",
             done_marker,
             "",
         ]

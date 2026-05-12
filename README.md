@@ -198,6 +198,7 @@ AgentTalk 的 P0 可靠性链路包括：
 - 消息状态链：`sent -> delivered -> submitted -> acked -> completed`
 - `submitted` 表示本地 relay 已确认 Enter 生效，不只是把文本粘贴进输入框
 - `acked` 表示目标 agent 已打印 `AGENTTALK_ACK:<message-id>`，确认任务已被 agent 看到
+- ACK 不是最终回复；目标 agent 打印 ACK 后必须继续执行任务，直到打印 done marker
 - `submit_unconfirmed` 表示 relay 怀疑消息仍停在输入框，需检查 DLQ
 - 长消息默认写入本地 inbox 文件，tmux 只注入短指令，降低 Codex/Claude TUI 粘贴失败风险
 - CLI 和本地 relay 会对 Hub/TLS 连接建立阶段的短暂 EOF/断连做有限重试；安全的 Hub 写回接口也会重试临时 `502/503/504`
@@ -303,7 +304,7 @@ scripts/start-client.sh --discover
 ### Reliable Delivery
 
 AgentTalk now tracks delivery through `sent -> delivered -> submitted -> acked -> completed`.
-`submitted` means the local relay confirmed that Enter took effect; `acked` means the target agent printed `AGENTTALK_ACK:<message-id>`.
+`submitted` means the local relay confirmed that Enter took effect; `acked` means the target agent printed `AGENTTALK_ACK:<message-id>`. ACK is not a final answer: the target agent must continue the task after ACK and only finish when it prints the done marker.
 If submit cannot be confirmed, the message is marked `submit_unconfirmed` and recorded in the local dead-letter queue.
 
 Local relay operations:

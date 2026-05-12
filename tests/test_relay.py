@@ -364,6 +364,9 @@ def test_build_injected_message_contains_marker() -> None:
     assert "to: bob" in payload
     assert "Please review." in payload
     assert "AGENTTALK_ACK:msg-1" in payload
+    assert "Do not stop after the ACK line" in payload
+    assert "continue with the task immediately" in payload
+    assert "First print this exact acknowledgement" not in payload
     assert "<<<AGENTTALK_DONE:msg-1>>>" in payload
 
 
@@ -380,6 +383,9 @@ def test_prepare_injected_message_keeps_short_message_inline(tmp_path) -> None:
     assert "\n" not in payload
     assert "Please review. Focus on errors." in payload
     assert "AGENTTALK_ACK:msg-1" in payload
+    assert "Do not stop after the ACK line" in payload
+    assert "continue with the task immediately" in payload
+    assert "First print this exact acknowledgement" not in payload
     assert "Full task is stored" not in payload
     assert "<<<AGENTTALK_DONE:msg-1>>>" in payload
     assert list(tmp_path.iterdir()) == []
@@ -402,9 +408,15 @@ def test_prepare_injected_message_spools_long_multiline_message(tmp_path) -> Non
     spooled = spool_files[0].read_text(encoding="utf-8")
     assert body in spooled
     assert "AGENTTALK_ACK:msg-long/1" in spooled
+    assert "Do not stop after the ACK line" in spooled
+    assert "continue with the task immediately" in spooled
+    assert "First print this exact acknowledgement" not in spooled
     assert "<<<AGENTTALK_DONE:msg-long-1>>>" in spooled
     assert "\n" not in payload
     assert "Full task is stored at" in payload
+    assert "Do not stop after the ACK line" in payload
+    assert "continue with the task immediately" in payload
+    assert "First print this exact acknowledgement" not in payload
     assert body not in payload
     assert str(spool_files[0]) in payload
 
