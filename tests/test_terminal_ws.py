@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -93,3 +94,21 @@ def test_terminal_websocket_uses_registered_tmux_target(tmp_path: Path, monkeypa
         websocket.send_text("x")
 
     assert FakeTmuxClient.writes == [("agenttalk-e2e-api:0.0", "x", False)]
+
+
+def test_relay_terminal_websocket_sends_hello_ok(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    with client.websocket_connect("/ws/relay-terminal/machine-a") as websocket:
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "hello",
+                    "machine_id": "machine-a",
+                    "token": "test-token",
+                    "version": "test",
+                }
+            )
+        )
+
+        assert json.loads(websocket.receive_text()) == {"type": "hello_ok"}

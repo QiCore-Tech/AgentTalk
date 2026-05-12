@@ -807,7 +807,7 @@ def daemon_start(
         config,
         tmux_client=get_process_manager(),
     )
-    asyncio.get_event_loop().run_until_complete(reverse_tunnel.start())
+    reverse_tunnel.start_background()
     typer.echo("Reverse tunnel client started")
 
     relay.run_forever(interval_seconds=interval, config_path=config_path or default_config_path())

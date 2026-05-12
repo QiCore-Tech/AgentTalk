@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -37,6 +36,8 @@ from agenttalk.tmux import TmuxClient
 from agenttalk.feishu.service import FeishuAgentTalkService
 from agenttalk.feishu.worker import FeishuEventHandler, FeishuLongConnectionWorker, LarkMessenger
 
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -207,6 +208,7 @@ def create_app(settings: HubSettings) -> FastAPI:
         # Register relay connection
         conn = RelayConnection(machine_id, websocket)
         relay_manager.register(machine_id, conn)
+        await conn.send({"type": "hello_ok"})
 
         try:
             while True:

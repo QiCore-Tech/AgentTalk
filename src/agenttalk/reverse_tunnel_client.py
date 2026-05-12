@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any
 
 import websockets
@@ -34,6 +35,8 @@ class ReverseTunnelClient:
         self._running = False
         self._sessions: dict[str, dict[str, Any]] = {}  # session_id -> {short_id, tmux_target, task}
         self._reconnect_delay = 1.0
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
 
     async def start(self) -> None:
         """Start the reverse tunnel connection."""
@@ -42,6 +45,33 @@ class ReverseTunnelClient:
         self._running = True
         asyncio.create_task(self._connect_loop())
         logger.info("Reverse tunnel client started for %s", self.config.machine_id)
+
+    def start_background(self) -> None:
+        """Start the reverse tunnel client on a dedicated event loop thread."""
+        if self._thread and self._thread.is_alive():
+            return
+
+        started = threading.Event()
+        errors: list[BaseException] = []
+
+        def run() -> None:
+            loop = asyncio.new_event_loop()
+            self._loop = loop
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self.start())
+            except BaseException as exc:
+                errors.append(exc)
+                started.set()
+                return
+            started.set()
+            loop.run_forever()
+
+        self._thread = threading.Thread(target=run, name="agenttalk-reverse-tunnel", daemon=True)
+        self._thread.start()
+        started.wait(timeout=5)
+        if errors:
+            raise RuntimeError(f"failed to start reverse tunnel client: {errors[0]}") from errors[0]
 
     async def stop(self) -> None:
         """Stop the reverse tunnel connection."""
@@ -73,20 +103,23 @@ class ReverseTunnelClient:
 
         async with websockets.connect(url) as ws:
             self.ws = ws
-            # Send hello with auth
-            await ws.send(json.dumps({
-                "type": "hello",
-                "machine_id": self.config.machine_id,
-                "token": self.config.token,
-                "version": "1.0",
-            }))
-            logger.info("Reverse tunnel authenticated for %s", self.config.machine_id)
+            try:
+                # Send hello with auth
+                await ws.send(json.dumps({
+                    "type": "hello",
+                    "machine_id": self.config.machine_id,
+                    "token": self.config.token,
+                    "version": "1.0",
+                }))
+                logger.info("Reverse tunnel hello sent for %s", self.config.machine_id)
 
-            async for message in ws:
-                try:
-                    await self._handle_message(json.loads(message))
-                except Exception as exc:
-                    logger.exception("Error handling reverse tunnel message: %s", exc)
+                async for message in ws:
+                    try:
+                        await self._handle_message(json.loads(message))
+                    except Exception as exc:
+                        logger.exception("Error handling reverse tunnel message: %s", exc)
+            finally:
+                self.ws = None
 
     async def _handle_message(self, msg: dict[str, Any]) -> None:
         """Handle incoming message from Hub."""
@@ -103,6 +136,7 @@ class ReverseTunnelClient:
             await self._handle_terminal_close(session_id)
         elif msg_type == "hello_ok":
             logger.info("Hub accepted reverse tunnel connection")
+            print("Hub accepted reverse tunnel connection", flush=True)
 
     async def _handle_terminal_start(self, msg: dict[str, Any]) -> None:
         """Start capturing tmux output for a new terminal session."""
