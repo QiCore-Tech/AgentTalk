@@ -800,11 +800,15 @@ def daemon_start(
         typer.echo(f"Synced {result.upserted} agents ({result.online} online, {result.offline} offline).")
         return
 
-    # Start tunnel server for remote Live Terminal access (always enabled)
-    from agenttalk.tunnel_server import start_tunnel_server
+    # Start reverse tunnel client for Live Terminal (relay -> Hub)
+    from agenttalk.reverse_tunnel_client import ReverseTunnelClient
 
-    tunnel_server = start_tunnel_server(config, config_path=config_path or default_config_path())
-    typer.echo(f"Tunnel server started on {tunnel_server.host}:{tunnel_server.port}")
+    reverse_tunnel = ReverseTunnelClient(
+        config,
+        tmux_client=get_process_manager(),
+    )
+    asyncio.get_event_loop().run_until_complete(reverse_tunnel.start())
+    typer.echo("Reverse tunnel client started")
 
     relay.run_forever(interval_seconds=interval, config_path=config_path or default_config_path())
 

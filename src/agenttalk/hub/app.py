@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -30,6 +32,7 @@ from agenttalk.hub.models import (
 from agenttalk.hub.settings import HubSettings
 from agenttalk.hub.store import AgentFilters, HubStore
 from agenttalk.hub.pty_manager import pty_manager
+from agenttalk.hub.relay_connection_manager import relay_manager, RelayConnection
 from agenttalk.tmux import TmuxClient
 from agenttalk.feishu.service import FeishuAgentTalkService
 from agenttalk.feishu.worker import FeishuEventHandler, FeishuLongConnectionWorker, LarkMessenger
@@ -181,6 +184,48 @@ def create_app(settings: HubSettings) -> FastAPI:
         finally:
             stream_task.cancel()
 
+    @app.websocket("/ws/relay-terminal/{machine_id}")
+    async def relay_terminal_websocket(websocket: WebSocket, machine_id: str):
+        """Reverse tunnel endpoint for relays to connect to Hub."""
+        await websocket.accept()
+
+        # Wait for hello message with auth
+        try:
+            hello_raw = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+            hello = json.loads(hello_raw)
+            if hello.get("type") != "hello":
+                await websocket.close(code=4001, reason="Expected hello message")
+                return
+            token = hello.get("token", "")
+            if token != settings.token:
+                await websocket.close(code=4001, reason="Invalid token")
+                return
+        except (asyncio.TimeoutError, json.JSONDecodeError):
+            await websocket.close(code=4001, reason="Auth timeout or invalid JSON")
+            return
+
+        # Register relay connection
+        conn = RelayConnection(machine_id, websocket)
+        relay_manager.register(machine_id, conn)
+
+        try:
+            while True:
+                msg_raw = await websocket.receive_text()
+                msg = json.loads(msg_raw)
+                msg_type = msg.get("type", "")
+                session_id = msg.get("session_id", "")
+
+                if msg_type == "terminal_output":
+                    await relay_manager.handle_relay_output(session_id, msg.get("data", ""))
+                elif msg_type == "terminal_error":
+                    await relay_manager.handle_relay_error(session_id, msg.get("message", ""))
+                elif msg_type == "ping":
+                    await conn.send({"type": "pong", "session_id": session_id})
+        except Exception as exc:
+            logger.warning("Relay terminal websocket error for %s: %s", machine_id, exc)
+        finally:
+            relay_manager.unregister(machine_id)
+
     @app.websocket("/ws/pty/{short_id}")
     async def pty_websocket(websocket: WebSocket, short_id: str):
         await websocket.accept()
@@ -189,53 +234,30 @@ def create_app(settings: HubSettings) -> FastAPI:
             await websocket.close(code=4004, reason=f"Agent not found: {short_id}")
             return
 
-        # Send saved context first so user sees previous output immediately
-        try:
-            context = store.get_agent_context(short_id)
-            if context and context.context:
-                import re
-                clean = re.sub(r'\x1b\[[0-9;]*[mKHJ]', '', context.context)
-                await websocket.send_text(f"\x1b[32m[Previous terminal output - {context.updated_at or 'unknown'}]\x1b[0m\r\n")
-                await websocket.send_text(clean.replace("\n", "\r\n") + "\r\n")
-                await websocket.send_text("\x1b[33m" + "=" * 40 + "\x1b[0m\r\n")
-        except Exception:
-            pass
-
-        # Try to connect to relay tunnel first (for remote agents)
-        relay = store.get_relay(agent.machine_id)
-        if relay:
-            # Prefer lan_ip (actual reachable IP), fallback to host_name
-            relay_host = relay.get("lan_ip") or relay.get("host_name", "")
-            if relay_host:
-                tunnel_url = f"ws://{relay_host}:8788/tunnel/{short_id}"
+        # Try reverse tunnel first (for remote agents)
+        if relay_manager.is_connected(agent.machine_id):
+            session_id = await relay_manager.open_terminal(agent.machine_id, short_id, websocket)
+            if session_id:
                 try:
-                    await websocket.send_text("\x1b[32m[Connecting to remote terminal...]\x1b[0m\r\n")
-                    import websockets
-                    async with websockets.connect(tunnel_url, open_timeout=3, close_timeout=1) as relay_ws:
-                        # Authenticate with relay
-                        await relay_ws.send(json.dumps({"token": settings.token}))
-                        await websocket.send_text("\x1b[32m[Connected to remote terminal]\x1b[0m\r\n")
-
-                        # Proxy data between browser and relay
-                        async def browser_to_relay():
-                            while True:
-                                message = await websocket.receive()
-                                if "text" in message:
-                                    await relay_ws.send(message["text"])
-                                elif "bytes" in message:
-                                    await relay_ws.send(message["bytes"])
-
-                        async def relay_to_browser():
-                            async for data in relay_ws:
-                                if isinstance(data, bytes):
-                                    await websocket.send_bytes(data)
-                                else:
-                                    await websocket.send_text(data)
-
-                        await asyncio.gather(browser_to_relay(), relay_to_browser())
-                    return
-                except Exception as exc:
-                    await websocket.send_text(f"\x1b[33m[Remote tunnel unavailable, falling back to local: {exc}]\x1b[0m\r\n")
+                    while True:
+                        message = await websocket.receive()
+                        if "text" in message:
+                            text = message["text"]
+                            if text.startswith("\x01"):
+                                try:
+                                    _, rows, cols = text.split(":")
+                                    await relay_manager.send_resize(session_id, int(rows), int(cols))
+                                except (ValueError, IndexError):
+                                    pass
+                            else:
+                                await relay_manager.send_input(session_id, text)
+                        elif "bytes" in message:
+                            await relay_manager.send_input(session_id, message["bytes"].decode("utf-8", errors="replace"))
+                except Exception:
+                    pass
+                finally:
+                    await relay_manager.close_terminal(session_id)
+                return
 
         # Fallback: local PTY (for agents on same machine as Hub)
         await websocket.send_text("\x1b[32m[Connected to PTY]\x1b[0m\r\n")
