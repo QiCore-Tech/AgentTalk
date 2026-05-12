@@ -253,8 +253,9 @@ class ReverseTunnelClient:
 
     async def _send(self, msg: dict[str, Any]) -> None:
         """Send message to Hub via websocket."""
-        if self.ws and self.ws.open:
-            try:
-                await self.ws.send(json.dumps(msg))
-            except Exception as exc:
-                logger.warning("Failed to send to Hub: %s", exc)
+        if self.ws is None:
+            return
+        try:
+            await self.ws.send(json.dumps(msg))
+        except Exception as exc:
+            logger.warning("Failed to send to Hub: %s", exc)
