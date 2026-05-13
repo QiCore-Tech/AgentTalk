@@ -1169,6 +1169,58 @@ def test_relay_watch_auto_resumes_selected_model_capacity_error() -> None:
     assert "msg-1" in relay.watch_states
 
 
+def test_relay_sync_auto_resumes_registered_agent_capacity_error_once_per_output() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+            )
+        ],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient(
+        [
+            TmuxPane(
+                target="dev:0.1",
+                pane_id="%1",
+                command="codex",
+                current_path="/workspace/api",
+                title="codex",
+                kind="codex",
+                pane_pid=None,
+            )
+        ]
+    )
+    tmux.captures["dev:0.1"] = (
+        "⚠ Selected model is at capacity. Please try a different model.\n"
+    )
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
+
+    relay.sync_once()
+    relay.sync_once()
+
+    assert tmux.injections.count(("dev:0.1", "继续", True)) == 1
+
+    tmux.captures["dev:0.1"] = "Working (esc to interrupt)\n"
+    relay.sync_once()
+    tmux.captures["dev:0.1"] = (
+        "⚠ Selected model is at capacity. Please try a different model.\n"
+    )
+    relay.sync_once()
+
+    assert tmux.injections.count(("dev:0.1", "继续", True)) == 2
+
+
 def test_relay_watch_does_not_downgrade_terminal_hub_status() -> None:
     config = AgentTalkConfig(
         hub_url="http://hub.local:8787",

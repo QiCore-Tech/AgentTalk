@@ -246,6 +246,19 @@ def output_fingerprint(output: str) -> str:
     return hashlib.sha256(output.encode()).hexdigest()[:16]
 
 
+def auto_resume_capacity_fingerprint(output: str) -> str:
+    matched_lines: list[str] = []
+    for line in output.splitlines():
+        normalized = line.strip()
+        if not normalized:
+            continue
+        lower = normalized.lower()
+        if any(pattern in lower for pattern in AUTO_RESUME_PATTERNS):
+            matched_lines.append(normalized)
+    source = "\n".join(matched_lines[-6:]) if matched_lines else output
+    return output_fingerprint(source.lower())
+
+
 class AgentTalkRelay:
     def __init__(
         self,
@@ -394,6 +407,11 @@ class AgentTalkRelay:
             current_fingerprint = output_fingerprint(recent_output)
             detected_errors = detect_errors(recent_output)
             detected_pauses = detect_pause(recent_output)
+            self._maybe_auto_resume_on_capacity(
+                resume_key=f"agent:{binding.short_id}",
+                target=binding.tmux_target,
+                observed_output=recent_output,
+            )
         except Exception:
             pane_alive = False
 
@@ -727,7 +745,11 @@ class AgentTalkRelay:
                 continue
             response_delta = strip_injected_message_echo(delta, state.done_marker)
             acked, response_delta = strip_agenttalk_ack(response_delta, message_id)
-            auto_resumed = self._maybe_auto_resume_on_capacity(message_id, state.target, response_delta)
+            auto_resumed = self._maybe_auto_resume_on_capacity(
+                resume_key=f"watch:{message_id}",
+                target=state.target,
+                observed_output=response_delta,
+            )
             # Stricter completion check: the marker must appear on its own line
             # (allowing leading/trailing whitespace) AND there must be non-empty
             # response content before the marker. This rejects two failure
@@ -751,23 +773,25 @@ class AgentTalkRelay:
                 logger.info("AgentTalk relay auto-resumed %s on %s", message_id, state.target)
         for message_id in completed:
             self.watch_states.pop(message_id, None)
+            self._auto_resume_fingerprints.pop(f"watch:{message_id}", None)
             self._auto_resume_fingerprints.pop(message_id, None)
         if completed:
             self._save_watch_states()
         return updates
 
-    def _maybe_auto_resume_on_capacity(self, message_id: str, target: str, response_delta: str) -> bool:
-        if not detect_auto_resume_capacity(response_delta):
+    def _maybe_auto_resume_on_capacity(self, *, resume_key: str, target: str, observed_output: str) -> bool:
+        if not detect_auto_resume_capacity(observed_output):
+            self._auto_resume_fingerprints.pop(resume_key, None)
             return False
-        fingerprint = output_fingerprint(response_delta)
-        if self._auto_resume_fingerprints.get(message_id) == fingerprint:
+        fingerprint = auto_resume_capacity_fingerprint(observed_output)
+        if self._auto_resume_fingerprints.get(resume_key) == fingerprint:
             return False
         try:
             self.tmux_client.inject_text(target, "继续", submit=True)
         except Exception:
-            logger.exception("AgentTalk relay failed to auto-resume %s on %s", message_id, target)
+            logger.exception("AgentTalk relay failed to auto-resume %s on %s", resume_key, target)
             return False
-        self._auto_resume_fingerprints[message_id] = fingerprint
+        self._auto_resume_fingerprints[resume_key] = fingerprint
         return True
 
     def _mark_delivery_ticket(self, message_id: str, status: str, error: str = "") -> None:
