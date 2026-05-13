@@ -165,6 +165,7 @@ ERROR_PATTERNS = {
 
 # Patterns indicating the agent is paused waiting for LLM/network
 PAUSE_PATTERNS = [
+    "selected model is at capacity",
     "waiting for response",
     "generating response",
     "thinking...",
@@ -185,6 +186,11 @@ PAUSE_PATTERNS = [
     "context length exceeded",
     "token limit",
     "max tokens",
+]
+
+AUTO_RESUME_PATTERNS = [
+    "selected model is at capacity",
+    "at capacity",
 ]
 
 
@@ -212,6 +218,11 @@ def detect_pause(output: str) -> list[str]:
         if pattern in output_lower:
             found.append(pattern)
     return list(set(found))
+
+
+def detect_auto_resume_capacity(output: str) -> list[str]:
+    output_lower = output.lower()
+    return [pattern for pattern in AUTO_RESUME_PATTERNS if pattern in output_lower]
 
 
 def tail_shows_live_agent_ui(output: str) -> bool:
@@ -253,6 +264,7 @@ class AgentTalkRelay:
         self.delivery_ticket_dir = delivery_ticket_dir or default_delivery_ticket_dir()
         self.delivery_tickets: dict[str, DeliveryTicket] = self._load_delivery_tickets()
         self.health_states: dict[str, AgentHealthState] = {}
+        self._auto_resume_fingerprints: dict[str, str] = {}
         # Initialize LLM analyzer if available and enabled in config
         self._llm_analyzer = None
         if _llm_available and config.llm.enabled:
@@ -715,6 +727,7 @@ class AgentTalkRelay:
                 continue
             response_delta = strip_injected_message_echo(delta, state.done_marker)
             acked, response_delta = strip_agenttalk_ack(response_delta, message_id)
+            auto_resumed = self._maybe_auto_resume_on_capacity(message_id, state.target, response_delta)
             # Stricter completion check: the marker must appear on its own line
             # (allowing leading/trailing whitespace) AND there must be non-empty
             # response content before the marker. This rejects two failure
@@ -734,11 +747,28 @@ class AgentTalkRelay:
             else:
                 self.hub_client.update_message_status(message_id, MessageStatus.WORKING)
             updates += 1
+            if auto_resumed:
+                logger.info("AgentTalk relay auto-resumed %s on %s", message_id, state.target)
         for message_id in completed:
             self.watch_states.pop(message_id, None)
+            self._auto_resume_fingerprints.pop(message_id, None)
         if completed:
             self._save_watch_states()
         return updates
+
+    def _maybe_auto_resume_on_capacity(self, message_id: str, target: str, response_delta: str) -> bool:
+        if not detect_auto_resume_capacity(response_delta):
+            return False
+        fingerprint = output_fingerprint(response_delta)
+        if self._auto_resume_fingerprints.get(message_id) == fingerprint:
+            return False
+        try:
+            self.tmux_client.inject_text(target, "继续", submit=True)
+        except Exception:
+            logger.exception("AgentTalk relay failed to auto-resume %s on %s", message_id, target)
+            return False
+        self._auto_resume_fingerprints[message_id] = fingerprint
+        return True
 
     def _mark_delivery_ticket(self, message_id: str, status: str, error: str = "") -> None:
         ticket = self.delivery_tickets.get(message_id)

@@ -1135,6 +1135,40 @@ def test_relay_watch_rejects_echo_only_completion() -> None:
     assert "msg-1" in relay.watch_states
 
 
+def test_relay_watch_auto_resumes_selected_model_capacity_error() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient([])
+    tmux.captures["dev:0.1"] = (
+        "before\n"
+        "⚠ Selected model is at capacity. Please try a different model.\n"
+    )
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
+    relay.watch_states["msg-1"] = WatchState(
+        target="dev:0.1",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-1>>>",
+    )
+
+    relay.update_watches_once()
+    relay.update_watches_once()
+
+    assert ("dev:0.1", "继续", True) in tmux.injections
+    assert tmux.injections.count(("dev:0.1", "继续", True)) == 1
+    assert fake_hub.status_updates == [
+        ("msg-1", MessageStatus.WORKING, ""),
+        ("msg-1", MessageStatus.WORKING, ""),
+    ]
+    assert "msg-1" in relay.watch_states
+
+
 def test_relay_watch_does_not_downgrade_terminal_hub_status() -> None:
     config = AgentTalkConfig(
         hub_url="http://hub.local:8787",

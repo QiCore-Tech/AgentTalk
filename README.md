@@ -204,6 +204,7 @@ AgentTalk 的 P0 可靠性链路包括：
 - CLI 和本地 relay 会对 Hub/TLS 连接建立阶段的短暂 EOF/断连做有限重试；安全的 Hub 写回接口也会重试临时 `502/503/504`
 - relay 每轮会重新读取本地配置，新增或改名后的 agent 不需要等到下次 daemon restart 才能注册和 heartbeat
 - relay 会把待 watch 的消息持久化到 `~/.agenttalk/watch_states.json`；如果 daemon 重启或 Hub 临时不可用，后续轮询仍可继续尝试完成回传
+- relay watch 到 `Selected model is at capacity` 时会自动向目标 pane 发送 `继续`，同一段输出只发送一次
 - 如果 Hub 请求仍失败，CLI 会给出可读错误和后续 `status/response/context` 追踪命令
 
 本地 relay 管理：
@@ -258,7 +259,7 @@ agenttalk-e2e-*
 最近验证结果：
 
 ```text
-uv run pytest        47 passed
+uv run pytest        123 passed
 npm run lint         passed
 npm run build        passed
 npm run test:e2e     4 passed
@@ -306,6 +307,7 @@ scripts/start-client.sh --discover
 AgentTalk now tracks delivery through `sent -> delivered -> submitted -> acked -> completed`.
 `submitted` means the local relay confirmed that Enter took effect; `acked` means the target agent printed `AGENTTALK_ACK:<message-id>`. ACK is not a final answer: the target agent must continue the task after ACK and only finish when it prints the done marker.
 If submit cannot be confirmed, the message is marked `submit_unconfirmed` and recorded in the local dead-letter queue.
+When the relay watch loop sees `Selected model is at capacity`, it automatically sends `继续` to the target pane once for that output.
 
 Local relay operations:
 
@@ -359,7 +361,7 @@ agenttalk-e2e-*
 Latest verified results:
 
 ```text
-uv run pytest        47 passed
+uv run pytest        123 passed
 npm run lint         passed
 npm run build        passed
 npm run test:e2e     4 passed
