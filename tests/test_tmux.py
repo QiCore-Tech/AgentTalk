@@ -78,12 +78,14 @@ def test_inject_text_auto_submit_uses_single_enter(monkeypatch) -> None:
     monkeypatch.setattr(TmuxProcessManager, "capture_output", lambda self, target, lines=80: "")
     monkeypatch.setattr(process_manager.time, "sleep", lambda _seconds: None)
 
-    TmuxProcessManager().inject_text("dev:0.1", "large\nmessage", submit=True)
+    result = TmuxProcessManager().inject_text("dev:0.1", "large\nmessage", submit=True)
 
     submit_calls = [
         call for call in calls if call[:4] == ["tmux", "send-keys", "-t", "dev:0.1"]
     ]
-    assert submit_calls == [["tmux", "send-keys", "-t", "dev:0.1", "Enter"]]
+    assert submit_calls == [["tmux", "send-keys", "-t", "dev:0.1", "Enter"]] * process_manager.SUBMIT_MAX_ATTEMPTS
+    assert not result.submit_confirmed
+    assert result.pending_input_detected
 
 
 def test_inject_text_auto_submit_retries_when_agenttalk_input_still_pending(monkeypatch) -> None:
@@ -110,7 +112,7 @@ def test_inject_text_auto_submit_retries_when_agenttalk_input_still_pending(monk
     )
     monkeypatch.setattr(process_manager.time, "sleep", lambda _seconds: None)
 
-    TmuxProcessManager().inject_text("dev:0.1", "large\nmessage", submit=True)
+    result = TmuxProcessManager().inject_text("dev:0.1", "large\nmessage", submit=True)
 
     submit_calls = [
         call for call in calls if call[:4] == ["tmux", "send-keys", "-t", "dev:0.1"]
@@ -118,6 +120,8 @@ def test_inject_text_auto_submit_retries_when_agenttalk_input_still_pending(monk
     assert submit_calls == [
         ["tmux", "send-keys", "-t", "dev:0.1", "Enter"]
     ] * process_manager.SUBMIT_MAX_ATTEMPTS
+    assert not result.submit_confirmed
+    assert result.pending_input_detected
 
 
 def test_inject_text_auto_submit_queues_busy_codex_input_with_tab(monkeypatch) -> None:
@@ -163,6 +167,39 @@ def test_inject_text_auto_submit_queues_busy_codex_input_with_tab(monkeypatch) -
     ]
     assert result.submit_confirmed
     assert result.attempts == 2
+
+
+def test_inject_text_auto_submit_does_not_assume_success_on_claude_weak_signal(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    captures = iter([""] * process_manager.SUBMIT_MAX_ATTEMPTS)
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(process_manager.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        TmuxProcessManager,
+        "_wait_for_active_submission",
+        lambda self, target: False,
+    )
+    monkeypatch.setattr(
+        TmuxProcessManager,
+        "capture_output",
+        lambda self, target, lines=80: next(captures),
+    )
+    monkeypatch.setattr(process_manager.time, "sleep", lambda _seconds: None)
+
+    result = TmuxProcessManager().inject_text("dev:0.1", "large\nmessage", submit=True)
+
+    submit_calls = [
+        call for call in calls if call[:4] == ["tmux", "send-keys", "-t", "dev:0.1"]
+    ]
+    assert submit_calls == [
+        ["tmux", "send-keys", "-t", "dev:0.1", "Enter"]
+    ] * process_manager.SUBMIT_MAX_ATTEMPTS
+    assert not result.submit_confirmed
+    assert result.pending_input_detected
 
 
 def test_active_submission_detection_rejects_idle_completed_spinner() -> None:

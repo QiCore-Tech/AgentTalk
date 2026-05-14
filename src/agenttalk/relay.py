@@ -582,15 +582,13 @@ class AgentTalkRelay:
             injected_status = MessageStatus.INJECTED_PASTE_ONLY
         elif injection_result is not None and injection_result.submit_confirmed:
             injected_status = MessageStatus.SUBMITTED
-        elif injection_result is not None and injection_result.pending_input_detected:
+        elif injection_result is not None:
             injected_status = MessageStatus.SUBMIT_UNCONFIRMED
             record_dead_letter(
                 message=message,
                 reason="submit_unconfirmed",
                 error=f"submit attempts: {injection_result.attempts}",
             )
-        else:
-            injected_status = MessageStatus.INJECTED
         self.watch_states[message["message_id"]] = WatchState(
             target=binding.tmux_target,
             baseline=baseline,

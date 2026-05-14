@@ -898,6 +898,57 @@ def test_relay_auto_submit_uses_injected_status() -> None:
     assert fake_hub.status_updates == [("msg-1", MessageStatus.SUBMITTED, "")]
 
 
+def test_relay_auto_submit_without_positive_confirmation_is_submit_unconfirmed(tmp_path, monkeypatch) -> None:
+    import agenttalk.dlq as dlq_module
+    import agenttalk.relay as relay_module
+
+    dlq_path = tmp_path / "dlq.json"
+    monkeypatch.setattr(dlq_module, "default_dlq_path", lambda: dlq_path)
+    monkeypatch.setattr(relay_module, "record_dead_letter", dlq_module.record_dead_letter)
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-claude-ui",
+                owner="alice",
+                kind="claude",
+                workspace="/workspace/ui",
+                tmux_target="dev:0.2",
+                pane_id="%2",
+                receive_mode=ReceiveMode.AUTO_SUBMIT,
+            )
+        ],
+    )
+    fake_hub = FakeHubClient(
+        next_payload={
+            "message_id": "msg-1",
+            "sender": "bob",
+            "target": "alice-claude-ui",
+            "body": "Please review.",
+            "done_marker": "<<<AGENTTALK_DONE:msg-1>>>",
+        }
+    )
+    tmux = RecordingTmuxClient([])
+    tmux.injection_result = InjectionResult(
+        pasted=True,
+        submit_requested=True,
+        submit_confirmed=False,
+        pending_input_detected=False,
+        attempts=5,
+    )
+
+    AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).process_next_message_once()
+
+    assert fake_hub.status_updates == [("msg-1", MessageStatus.SUBMIT_UNCONFIRMED, "")]
+    records = dlq_module.load_dead_letters(dlq_path)
+    assert records[0]["message_id"] == "msg-1"
+    assert records[0]["reason"] == "submit_unconfirmed"
+
+
 def test_strip_agenttalk_ack_removes_ack_line() -> None:
     acked, stripped = strip_agenttalk_ack(
         "AGENTTALK_ACK:msg-1\nanswer\n<<<AGENTTALK_DONE:msg-1>>>\n",

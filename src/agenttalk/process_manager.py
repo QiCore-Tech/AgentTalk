@@ -171,18 +171,21 @@ class TmuxProcessManager(ProcessManager):
         )
 
     def _submit_once(self, target: str) -> tuple[bool, bool, int]:
-        """Submit pasted input, retrying only when the prompt still looks pending.
+        """Submit pasted input, succeeding only on positive confirmation.
 
         Codex/Claude TUIs can need a short beat after a tmux paste before Enter
         is interpreted as "submit" rather than another editor keystroke. This is
         most visible for long AgentTalk messages, where the input box keeps the
         pasted prompt and humans have to press Enter again. We therefore delay
-        the first submit slightly and only send follow-up Enter keys when the
-        terminal tail still appears to contain an unsubmitted AgentTalk prompt.
+        the first submit slightly and only accept success when the pane shows
+        positive evidence that the agent consumed the message. When we cannot
+        prove that, we return an unconfirmed result and let the relay recovery
+        loop retry later instead of assuming success for weak-signal UIs.
         """
 
         time.sleep(SUBMIT_INITIAL_DELAY_SECONDS)
         submit_key = "Enter"
+        used_codex_queue_submit = False
         for attempt in range(SUBMIT_MAX_ATTEMPTS):
             attempt_count = attempt + 1
             submit = subprocess.run(
@@ -200,17 +203,19 @@ class TmuxProcessManager(ProcessManager):
             try:
                 output = self.capture_output(target, lines=80)
             except Exception:
-                return False, False, attempt_count
+                return False, True, attempt_count
             pending_input = _tail_shows_pending_agenttalk_input(output)
-            if not pending_input:
+            if not pending_input and used_codex_queue_submit:
                 return True, False, attempt_count
-            submit_key = "Tab" if _tail_shows_codex_queue_prompt(output) else "Enter"
+            codex_queue_prompt = _tail_shows_codex_queue_prompt(output)
+            submit_key = "Tab" if codex_queue_prompt else "Enter"
+            used_codex_queue_submit = used_codex_queue_submit or codex_queue_prompt
             time.sleep(SUBMIT_RETRY_DELAY_SECONDS)
         try:
             output = self.capture_output(target, lines=80)
         except Exception:
-            return False, False, SUBMIT_MAX_ATTEMPTS
-        return False, _tail_shows_pending_agenttalk_input(output), SUBMIT_MAX_ATTEMPTS
+            return False, True, SUBMIT_MAX_ATTEMPTS
+        return False, True, SUBMIT_MAX_ATTEMPTS
 
     def send_key(self, target: str, key: str) -> None:
         proc = subprocess.run(
