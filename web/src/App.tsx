@@ -104,23 +104,9 @@ function App() {
   }, [agents, query, statusFilter])
 
   async function handleSend(agent: Agent, body: string, watch: boolean) {
-    // Send directly to PTY for immediate terminal interaction
     try {
-      const response = await fetch(`${window.location.origin}/api/agents/${encodeURIComponent(agent.short_id)}/pty`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${import.meta.env.VITE_AGENTTALK_TOKEN || ''}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ text: body + '\r' }),
-      })
-      if (!response.ok) {
-        throw new Error(await response.text())
-      }
-      // Also create a message record for tracking
       const created = await sendMessage(agent.short_id, body)
       setMessages((current) => [created, ...current].slice(0, 12))
-      // Refresh context after sending message
       setTimeout(() => {
         void loadContext(agent.short_id)
       }, 1000)
@@ -605,9 +591,28 @@ function ContextOverview({
 function QuickStart() {
   const hubUrl = window.location.origin
   const token = import.meta.env.VITE_AGENTTALK_TOKEN || 'your-token'
+  const hubDeployPrompt = buildHubDeployPrompt(hubUrl, token)
+  const agentDeployPrompt = buildAgentDeployPrompt(hubUrl, token)
 
   return (
     <div className="quickStart">
+      <section className="panel">
+        <h2>AI Agent 部署提示词</h2>
+        <p>将下面的提示词发给负责部署的 AI agent。Hub 和 Agent 端分开执行，先部署 Hub，再部署每台开发机上的 Agent 端。</p>
+        <div className="promptGrid">
+          <PromptCard
+            title="Hub 部署提示词"
+            description="用于在服务器或一台固定机器上部署 AgentTalk Hub、Web UI 和可选飞书机器人。"
+            prompt={hubDeployPrompt}
+          />
+          <PromptCard
+            title="Agent 端部署提示词"
+            description="用于在开发机上安装 CLI、注册本机 agent、启动 relay，并把 AgentTalk skill 加载到 AI agent。"
+            prompt={agentDeployPrompt}
+          />
+        </div>
+      </section>
+
       <section className="panel">
         <h2>Agent 端快速开始指南</h2>
         <p>在您的开发机器上注册 agent，使其可以被 Hub 管理和远程控制。</p>
@@ -874,6 +879,172 @@ agenttalk mode my-agent-001 paste_only`}
         </ul>
       </section>
     </div>
+  )
+}
+
+function buildHubDeployPrompt(hubUrl: string, token: string) {
+  return `你是部署 AgentTalk Hub 的 AI agent。请在目标服务器上完成部署并验证可用。
+
+项目信息：
+- 仓库：ssh://git@git.qicore.tech:29418/QiCore/soha_agentTalk.git
+- 当前建议 Hub URL：${hubUrl}
+- 当前建议 token：${token}
+
+任务目标：
+1. 读取仓库根目录的 AGENTS.md、README.md、docs/guides/server-quickstart.md、docs/guides/docker-deployment.md。
+2. 只部署 Hub 端，不注册开发机 agent，不直接操作任意现有 tmux pane。
+3. 优先使用 Docker Compose 部署；如果目标机器不能运行 Docker，再使用 Python 原生方式部署。
+4. 配置 AGENTTALK_TOKEN、AGENTTALK_PUBLIC_BASE_URL、SQLite 数据目录和 Web UI。
+5. 如需要飞书机器人，按 docs/guides/feishu-bot-setup.md 配置 FEISHU_ENABLE、FEISHU_APP_ID、FEISHU_APP_SECRET；没有凭据时不要启用飞书。
+6. 部署后验证：
+   - curl <Hub URL>/health 返回 {"status":"ok"}
+   - Web UI 能打开
+   - agenttalk list 在正确 token 下能访问 Hub，哪怕当前没有 agent
+7. 最后输出给我：
+   - Hub URL
+   - token 放置位置，不要明文暴露不必要的 secret
+   - 启动/停止/查看日志命令
+   - 验证命令和验证结果
+   - 后续 Agent 端接入时需要使用的 hub_url 和 token 获取方式
+
+推荐命令路径：
+\`\`\`bash
+git clone ssh://git@git.qicore.tech:29418/QiCore/soha_agentTalk.git
+cd soha_agentTalk
+scripts/deploy-hub.sh --token "${token}"
+curl ${hubUrl}/health
+\`\`\`
+
+如果使用原生方式：
+\`\`\`bash
+uv sync --extra feishu
+AGENTTALK_TOKEN="${token}" uv run agenttalk hub serve \\
+  --host 0.0.0.0 \\
+  --port 8787 \\
+  --token "${token}" \\
+  --web-dist web/dist
+\`\`\`
+`
+}
+
+function buildAgentDeployPrompt(hubUrl: string, token: string) {
+  return `你是把当前开发机接入 AgentTalk 的 AI agent。请完成 Agent 端安装、注册、relay 启动和 skill 加载。
+
+项目信息：
+- 仓库：ssh://git@git.qicore.tech:29418/QiCore/soha_agentTalk.git
+- Hub URL：${hubUrl}
+- Token：${token}
+
+硬性规则：
+1. 先读取仓库根目录 AGENTS.md 和 .agents/skills/agenttalk/SKILL.md。
+2. 不要向任意现有 tmux pane 直接发送输入。只使用 AgentTalk CLI、项目脚本，或用户明确指定且用于 AgentTalk 的 pane。
+3. tmux 测试只允许使用 agenttalk-e2e-* 命名的 session。
+4. 每个 agent 的 short-id 必须全局唯一。
+5. 如果当前系统是 Windows，不要求 tmux；--tmux-target 只作为标识符字符串。
+
+任务目标：
+1. 克隆并安装项目。
+2. 配置 Hub 连接。
+3. 根据系统选择接入方式：
+   - Linux/macOS：检查 tmux，创建或使用用户指定的 tmux session/pane，注册 agent。
+   - Windows：在普通终端运行 agent，使用稳定字符串作为 --tmux-target。
+4. 启动 relay/daemon，并确认 agent 出现在 Hub。
+5. 加载 AgentTalk skill 到当前 AI agent 可读取的 skills 目录。
+6. 验证 agenttalk doctor、agenttalk list --mine、Web UI 中 agent 状态。
+7. 最后输出：
+   - short-id、kind、workspace、tmux-target
+   - relay 启动方式和日志位置
+   - skill 安装位置
+   - 验证结果
+   - 如何停止、重启、排错
+
+Linux/macOS 推荐流程：
+\`\`\`bash
+git clone ssh://git@git.qicore.tech:29418/QiCore/soha_agentTalk.git
+cd soha_agentTalk
+uv sync --extra feishu
+uv run agenttalk setup "${hubUrl}" --token "${token}"
+./scripts/check-env.sh
+
+# 在用户指定项目目录中创建并注册 agent pane，或按需手动注册
+./scripts/setup-pane.sh --session agenttalk-e2e-<name> --kind codex
+
+# 把 AgentTalk skill 加载到 Claude Code；其他 agent 放到它自己的 skills 目录
+mkdir -p ~/.claude/skills/agenttalk
+cp .agents/skills/agenttalk/SKILL.md ~/.claude/skills/agenttalk/SKILL.md
+
+uv run agenttalk daemon install
+uv run agenttalk doctor
+uv run agenttalk list --mine
+\`\`\`
+
+Linux/macOS 手动注册示例：
+\`\`\`bash
+tmux new-session -d -s agenttalk-e2e-my-agent
+uv run agenttalk register \\
+  --short-id <unique-short-id> \\
+  --tmux-target agenttalk-e2e-my-agent:0.0 \\
+  --owner "$(whoami)" \\
+  --kind codex \\
+  --workspace "$(pwd)"
+uv run agenttalk daemon install
+\`\`\`
+
+Windows 推荐流程：
+\`\`\`powershell
+git clone ssh://git@git.qicore.tech:29418/QiCore/soha_agentTalk.git
+cd soha_agentTalk
+pip install -e ".[feishu,llm,windows]"
+agenttalk setup "${hubUrl}" --token "${token}"
+agenttalk register --short-id <unique-short-id> --tmux-target "main" --owner "$env:USERNAME" --kind codex
+agenttalk daemon install
+agenttalk doctor
+agenttalk list --mine
+\`\`\`
+
+Skill 使用验证：
+\`\`\`bash
+agenttalk list
+agenttalk context <peer-short-id> --lines 120
+agenttalk send --to <peer-short-id> --message "请检查当前接入是否正常" --watch
+\`\`\`
+`
+}
+
+function PromptCard({
+  title,
+  description,
+  prompt,
+}: {
+  title: string
+  description: string
+  prompt: string
+}) {
+  const [copied, setCopied] = useState(false)
+
+  async function copyPrompt() {
+    try {
+      await navigator.clipboard.writeText(prompt)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1800)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <article className="promptCard">
+      <div className="promptHeader">
+        <div>
+          <h3>{title}</h3>
+          <p>{description}</p>
+        </div>
+        <button className="secondary small" onClick={copyPrompt}>
+          {copied ? '已复制' : '复制'}
+        </button>
+      </div>
+      <pre className="codeBlock promptBlock">{prompt}</pre>
+    </article>
   )
 }
 
@@ -1225,14 +1396,14 @@ function LiveTerminal({ agent }: { agent: Agent }) {
       }
     }
 
-    socket.addEventListener('open', () => {
-      terminal.writeln('\x1b[32m[Connected to PTY]\x1b[0m')
-      sendSize()
-    })
+    socket.addEventListener('open', sendSize)
 
     socket.addEventListener('message', (event) => {
-      const data = new Uint8Array(event.data)
-      terminal.write(data)
+      if (typeof event.data === 'string') {
+        terminal.write(event.data)
+        return
+      }
+      terminal.write(new Uint8Array(event.data))
     })
 
     socket.addEventListener('close', () => {

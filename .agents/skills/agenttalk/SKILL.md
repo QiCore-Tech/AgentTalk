@@ -13,7 +13,11 @@ AgentTalk may also be exposed through a Feishu bot. The Feishu bot is for humans
 
 - Prefer structured AgentTalk messages over raw terminal control.
 - Always target a registered agent short ID, not a person name.
-- Use `--watch` when you need feedback in the current turn.
+- On this machine, use the `agenttalk` wrapper on `PATH`; it runs the cloned
+  AgentTalk CLI from `/workspace/soha_agentTalk`.
+- `agenttalk send --watch` is supported; if it times out or returns partial
+  output, follow up with `agenttalk status <message-id>`,
+  `agenttalk response <message-id>`, or `agenttalk context <agent-id>`.
 - Read recent context before sending if the target may already be busy.
 - Do not use AgentTalk to send secrets or private credentials.
 - Do not control tmux panes directly unless the user explicitly asks.
@@ -65,13 +69,15 @@ For normal peer collaboration:
 agenttalk send --to alice-codex-api --message "Please review the API contract in docs/plans/example.md."
 ```
 
-For feedback you need to observe immediately:
+For feedback you need to observe immediately, use `--watch`:
 
 ```bash
 agenttalk send --to alice-codex-api --message "Please review the API contract in docs/plans/example.md." --watch
 ```
 
-`--watch` should display delivery status, output deltas, and completion when the target prints the AgentTalk marker.
+Do not treat Hub `completed` as sufficient proof unless the actual context or
+response contains the peer's answer after the injected task text. Some terminals
+echo the injected done marker.
 
 Feishu equivalents:
 
@@ -123,13 +129,26 @@ If an AgentTalk message appears in this terminal:
 
 1. Treat it as a direct task from the sender.
 2. If the prompt says the full task is stored in a local file, read that file before answering.
-3. Answer in the same terminal.
-4. When done, print the exact completion marker included in the message on its own line.
+3. If the prompt asks for an `AGENTTALK_ACK:<message-id>` line, include that line once at the start of your actual response.
+4. Do not stop after the ACK line. Continue with the requested task immediately.
+5. Answer in the same terminal.
+6. When done, print the exact completion marker included in the message on its own line.
 
 Do not invent a marker. Use the marker from the received message exactly.
+
+Do not modify local delivery ticket files or run a separate acknowledgement
+script unless the message explicitly asks you to. Delivery tickets under
+`~/.agenttalk/delivery/` are maintained by the local relay daemon. Your job is
+to read the task, print the requested ACK line once, do the work, and print the
+done marker when complete.
 
 ## Failure Handling
 
 - If `agenttalk list` cannot reach the Hub, report that AgentTalk is unavailable.
 - If the target is missing or offline, report the target short ID and ask for a valid target.
 - If `--watch` times out but partial output exists, summarize the partial output and state that completion was not observed.
+- `submit_unconfirmed` means the relay could not prove the message left the
+  input box after automatic recovery attempts. Check `agenttalk context
+  <agent-id> --lines 120` and `agenttalk dlq list`.
+- `acked` means the target printed `AGENTTALK_ACK:<message-id>`. It is not a
+  final answer; the target must continue until it prints the done marker.

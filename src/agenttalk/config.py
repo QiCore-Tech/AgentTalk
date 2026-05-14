@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
-from dataclasses import dataclass, field
+from dataclasses import field
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -17,6 +17,61 @@ def default_config_path() -> Path:
 
 def default_machine_id() -> str:
     return f"{socket.gethostname()}:{os.environ.get('USER', 'unknown')}"
+
+
+def default_lan_ip() -> str:
+    """Detect the primary LAN IP address.
+
+    Priority:
+    1. AGENTTALK_LAN_IP environment variable (user override)
+    2. First non-Docker, non-loopback IP from hostname -I
+    3. IP from outgoing socket (may return Docker bridge IP)
+    """
+    # 1. Environment override
+    env_ip = os.environ.get("AGENTTALK_LAN_IP", "").strip()
+    if env_ip:
+        return env_ip
+
+    # 2. Try hostname -I and filter Docker/loopback IPs
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            all_ips = result.stdout.strip().split()
+            for ip in all_ips:
+                # Skip loopback
+                if ip.startswith("127."):
+                    continue
+                # Skip Docker bridge networks (172.17.x.x is docker0 default)
+                if ip.startswith("172.17."):
+                    continue
+                # Skip other common Docker networks
+                if ip.startswith("172.18.") or ip.startswith("172.19.") or ip.startswith("172.20."):
+                    continue
+                # Skip Docker Swarm / custom networks
+                if ip.startswith("10.0.") or ip.startswith("10.1."):
+                    continue
+                return ip
+    except Exception:
+        pass
+
+    # 3. Fallback: outgoing socket (may return Docker IP)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        pass
+
+    return ""
 
 
 class AgentBinding(BaseModel):
@@ -43,6 +98,7 @@ class AgentTalkConfig(BaseModel):
     machine_id: str = Field(default_factory=default_machine_id)
     host_name: str = Field(default_factory=socket.gethostname)
     user_name: str = Field(default_factory=lambda: os.environ.get("USER", "unknown"))
+    lan_ip: str = Field(default_factory=default_lan_ip)
     agents: list[AgentBinding] = field(default_factory=list)
     llm: LLMConfig = Field(default_factory=LLMConfig)
 

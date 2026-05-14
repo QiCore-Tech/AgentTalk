@@ -5,8 +5,6 @@ import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import pytest
-
 # Mock Windows platform for testing
 if sys.platform != "win32":
     sys.modules["ctypes"] = Mock()
@@ -14,7 +12,6 @@ if sys.platform != "win32":
 
 
 from agenttalk.process_manager import (
-    ManagedProcess,
     SubprocessProcessManager,
     TmuxProcessManager,
     _detect_agent_kind,

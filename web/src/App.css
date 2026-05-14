@@ -993,6 +993,48 @@ button.full {
   color: var(--text-bold);
 }
 
+.promptGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.promptCard {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-app);
+  padding: 16px;
+  min-width: 0;
+}
+
+.promptHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.promptHeader h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.promptHeader p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.promptBlock {
+  max-height: 460px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .codeBlock {
   background: var(--bg-app);
   border: 1px solid var(--border);
@@ -1214,6 +1256,10 @@ button.full {
   .preview {
     position: static;
     max-height: none;
+  }
+
+  .promptGrid {
+    grid-template-columns: 1fr;
   }
   
   .sidebar { 

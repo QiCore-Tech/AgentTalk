@@ -54,6 +54,7 @@ class RelayRegisterRequest(BaseModel):
     machine_id: str = Field(min_length=1, max_length=120)
     host_name: str = Field(min_length=1, max_length=255)
     user_name: str = Field(min_length=1, max_length=120)
+    lan_ip: str = Field(default="", max_length=255)
 
 
 class RelayHeartbeatRequest(BaseModel):
@@ -64,6 +65,7 @@ class RelayResponse(BaseModel):
     machine_id: str
     host_name: str
     user_name: str
+    lan_ip: str = ""
     last_seen_at: str
 
 

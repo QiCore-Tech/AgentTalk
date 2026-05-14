@@ -88,7 +88,9 @@ Delivery states are:
 sent -> delivered -> submitted -> acked -> completed
 ```
 
-`acked` means the target agent printed `AGENTTALK_ACK:<message-id>`.
+`acked` means the target agent printed `AGENTTALK_ACK:<message-id>`. ACK is not a final answer; the target agent must continue the task immediately after ACK and only finish when it prints the done marker.
+
+When the relay watch loop sees `Selected model is at capacity`, it automatically sends `继续` to the target pane once for that output.
 
 ## Safety
 

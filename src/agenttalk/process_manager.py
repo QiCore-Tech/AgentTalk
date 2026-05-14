@@ -52,6 +52,10 @@ class ProcessManager(abc.ABC):
         """向目标进程注入文本。"""
 
     @abc.abstractmethod
+    def send_key(self, target: str, key: str) -> None:
+        """向目标进程发送一个控制键。"""
+
+    @abc.abstractmethod
     def capture_output(self, target: str, *, lines: int = 300) -> str:
         """捕获目标进程最近输出。"""
 
@@ -167,21 +171,25 @@ class TmuxProcessManager(ProcessManager):
         )
 
     def _submit_once(self, target: str) -> tuple[bool, bool, int]:
-        """Submit pasted input, retrying only when the prompt still looks pending.
+        """Submit pasted input, succeeding only on positive confirmation.
 
         Codex/Claude TUIs can need a short beat after a tmux paste before Enter
         is interpreted as "submit" rather than another editor keystroke. This is
         most visible for long AgentTalk messages, where the input box keeps the
         pasted prompt and humans have to press Enter again. We therefore delay
-        the first submit slightly and only send follow-up Enter keys when the
-        terminal tail still appears to contain an unsubmitted AgentTalk prompt.
+        the first submit slightly and only accept success when the pane shows
+        positive evidence that the agent consumed the message. When we cannot
+        prove that, we return an unconfirmed result and let the relay recovery
+        loop retry later instead of assuming success for weak-signal UIs.
         """
 
         time.sleep(SUBMIT_INITIAL_DELAY_SECONDS)
+        submit_key = "Enter"
+        used_codex_queue_submit = False
         for attempt in range(SUBMIT_MAX_ATTEMPTS):
             attempt_count = attempt + 1
             submit = subprocess.run(
-                ["tmux", "send-keys", "-t", target, "Enter"],
+                ["tmux", "send-keys", "-t", target, submit_key],
                 text=True,
                 capture_output=True,
                 check=False,
@@ -195,16 +203,29 @@ class TmuxProcessManager(ProcessManager):
             try:
                 output = self.capture_output(target, lines=80)
             except Exception:
-                return False, False, attempt_count
+                return False, True, attempt_count
             pending_input = _tail_shows_pending_agenttalk_input(output)
-            if not pending_input:
+            if not pending_input and used_codex_queue_submit:
                 return True, False, attempt_count
+            codex_queue_prompt = _tail_shows_codex_queue_prompt(output)
+            submit_key = "Tab" if codex_queue_prompt else "Enter"
+            used_codex_queue_submit = used_codex_queue_submit or codex_queue_prompt
             time.sleep(SUBMIT_RETRY_DELAY_SECONDS)
         try:
             output = self.capture_output(target, lines=80)
         except Exception:
-            return False, False, SUBMIT_MAX_ATTEMPTS
-        return False, _tail_shows_pending_agenttalk_input(output), SUBMIT_MAX_ATTEMPTS
+            return False, True, SUBMIT_MAX_ATTEMPTS
+        return False, True, SUBMIT_MAX_ATTEMPTS
+
+    def send_key(self, target: str, key: str) -> None:
+        proc = subprocess.run(
+            ["tmux", "send-keys", "-t", target, key],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "tmux send-key failed")
 
     def _wait_for_active_submission(self, target: str, *, timeout: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -366,6 +387,16 @@ class SubprocessProcessManager(ProcessManager):
             attempts=1 if submit else 0,
         )
 
+    def send_key(self, target: str, key: str) -> None:
+        proc = self._procs.get(target)
+        if proc is None or proc.stdin is None:
+            raise RuntimeError(f"Process stdin not available: {target}")
+        if key == "Enter":
+            proc.stdin.write(os.linesep)
+        else:
+            raise RuntimeError(f"Unsupported key for subprocess target {target}: {key}")
+        proc.stdin.flush()
+
     def capture_output(self, target: str, *, lines: int = 300) -> str:
         log_file = self._log_path(target)
         if not log_file.exists():
@@ -418,8 +449,19 @@ def _detect_agent_kind(*, command: str, title: str = "") -> str:
 
 
 def _tail_shows_active_agent_submission(output: str) -> bool:
-    tail = "\n".join(output.splitlines()[-30:])
-    if "Working (" in tail or "esc to interrupt" in tail:
+    tail_lines = output.splitlines()[-30:]
+    marker_index = _tail_agenttalk_marker_index(tail_lines)
+    if marker_index is not None and marker_index >= max(len(tail_lines) - 12, 0):
+        after_marker = tail_lines[marker_index + 1 :]
+        if _tail_shows_codex_queue_prompt("\n".join(after_marker)):
+            return False
+        return _lines_show_active_agent_submission(after_marker)
+    return _lines_show_active_agent_submission(tail_lines)
+
+
+def _lines_show_active_agent_submission(lines: list[str]) -> bool:
+    output = "\n".join(lines)
+    if "Working (" in output or "esc to interrupt" in output:
         return True
     active_statuses = (
         "Crystallizing",
@@ -432,7 +474,7 @@ def _tail_shows_active_agent_submission(output: str) -> bool:
         "Working",
     )
     spinner_prefixes = ("·", "✢", "✻", "✶", "✺", "✷", "✸", "✹")
-    for line in (line.strip() for line in tail.splitlines()[-10:]):
+    for line in (line.strip() for line in lines[-10:]):
         if not line:
             continue
         if not any(line.startswith(prefix) for prefix in spinner_prefixes):
@@ -442,30 +484,20 @@ def _tail_shows_active_agent_submission(output: str) -> bool:
     return False
 
 
-def _tail_shows_pending_agenttalk_input(output: str) -> bool:
+def _tail_has_pending_agenttalk_input(output: str) -> bool:
     """Return True when the bottom of a pane still looks like unsent input.
 
     This intentionally looks only at the terminal tail. Submitted prompts are
     often echoed into scrollback, so seeing an AgentTalk marker anywhere is not
     enough. We only retry when the marker is close to the bottom and there is no
-    evidence that the agent has started or completed a response after it.
+    evidence that the agent has completed a response after it.
     """
 
     tail_lines = output.splitlines()[-30:]
     if not tail_lines:
         return False
 
-    marker_index: int | None = None
-    markers = (
-        "[AgentTalk Message]",
-        "[Pasted Content",
-        "Full task is stored at",
-        "message_id:",
-        "<<<AGENTTALK_DONE:",
-    )
-    for index, line in enumerate(tail_lines):
-        if any(marker in line for marker in markers):
-            marker_index = index
+    marker_index = _tail_agenttalk_marker_index(tail_lines)
     if marker_index is None:
         return False
 
@@ -489,14 +521,44 @@ def _tail_shows_pending_agenttalk_input(output: str) -> bool:
     )
     if any(any(indicator in line for indicator in response_indicators) for line in after_marker):
         return False
-    if _tail_shows_active_agent_submission("\n".join(tail_lines)):
-        return False
 
     prompt_window = tail_lines[max(marker_index - 2, 0) : marker_index + 1]
     if any(line.lstrip().startswith(("›", ">")) for line in prompt_window):
         return True
     # Wrapped input can push the prompt glyph above the captured marker line.
     return marker_index >= len(tail_lines) - 4
+
+
+def _tail_shows_pending_agenttalk_input(output: str) -> bool:
+    if not _tail_has_pending_agenttalk_input(output):
+        return False
+    if _tail_shows_codex_queue_prompt(output):
+        return True
+    tail_lines = output.splitlines()[-30:]
+    marker_index = _tail_agenttalk_marker_index(tail_lines)
+    if marker_index is None:
+        return False
+    return not _lines_show_active_agent_submission(tail_lines[marker_index + 1 :])
+
+
+def _tail_shows_codex_queue_prompt(output: str) -> bool:
+    tail = "\n".join(output.splitlines()[-20:]).lower()
+    return "tab to queue message" in tail
+
+
+def _tail_agenttalk_marker_index(tail_lines: list[str]) -> int | None:
+    marker_index: int | None = None
+    markers = (
+        "[AgentTalk Message]",
+        "[Pasted Content",
+        "Full task is stored at",
+        "message_id:",
+        "<<<AGENTTALK_DONE:",
+    )
+    for index, line in enumerate(tail_lines):
+        if any(marker in line for marker in markers):
+            marker_index = index
+    return marker_index
 
 
 def is_process_alive(pid: int) -> bool:

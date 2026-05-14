@@ -73,6 +73,7 @@ class HubStore:
                     machine_id TEXT PRIMARY KEY,
                     host_name TEXT NOT NULL,
                     user_name TEXT NOT NULL,
+                    lan_ip TEXT DEFAULT '',
                     last_seen_at TEXT NOT NULL
                 );
 
@@ -242,22 +243,29 @@ class HubStore:
 
     def register_relay(self, request: RelayRegisterRequest) -> RelayResponse:
         now = format_time(utc_now())
+        # Ensure lan_ip column exists for backward compatibility
         with self.connect() as conn:
+            try:
+                conn.execute("SELECT lan_ip FROM relays LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute("ALTER TABLE relays ADD COLUMN lan_ip TEXT DEFAULT ''")
             conn.execute(
                 """
-                INSERT INTO relays (machine_id, host_name, user_name, last_seen_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO relays (machine_id, host_name, user_name, lan_ip, last_seen_at)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(machine_id) DO UPDATE SET
                     host_name = excluded.host_name,
                     user_name = excluded.user_name,
+                    lan_ip = excluded.lan_ip,
                     last_seen_at = excluded.last_seen_at
                 """,
-                (request.machine_id, request.host_name, request.user_name, now),
+                (request.machine_id, request.host_name, request.user_name, request.lan_ip or "", now),
             )
         return RelayResponse(
             machine_id=request.machine_id,
             host_name=request.host_name,
             user_name=request.user_name,
+            lan_ip=request.lan_ip or "",
             last_seen_at=now,
         )
 
@@ -265,7 +273,7 @@ class HubStore:
         now = format_time(utc_now())
         with self.connect() as conn:
             existing = conn.execute(
-                "SELECT machine_id, host_name, user_name, last_seen_at FROM relays WHERE machine_id = ?",
+                "SELECT machine_id, host_name, user_name, lan_ip, last_seen_at FROM relays WHERE machine_id = ?",
                 (machine_id,),
             ).fetchone()
             if existing is None:
@@ -275,6 +283,7 @@ class HubStore:
             machine_id=str(existing["machine_id"]),
             host_name=str(existing["host_name"]),
             user_name=str(existing["user_name"]),
+            lan_ip=str(existing["lan_ip"]) if existing["lan_ip"] else "",
             last_seen_at=now,
         )
 
@@ -282,6 +291,23 @@ class HubStore:
         with self.connect() as conn:
             row = conn.execute("SELECT 1 FROM relays WHERE machine_id = ?", (machine_id,)).fetchone()
         return row is not None
+
+    def get_relay(self, machine_id: str) -> dict[str, str] | None:
+        """Get relay info by machine_id."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT machine_id, host_name, user_name, lan_ip, last_seen_at FROM relays WHERE machine_id = ?",
+                (machine_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "machine_id": str(row["machine_id"]),
+            "host_name": str(row["host_name"]),
+            "user_name": str(row["user_name"]),
+            "lan_ip": str(row["lan_ip"]) if row["lan_ip"] else "",
+            "last_seen_at": str(row["last_seen_at"]),
+        }
 
     def upsert_agent(self, request: AgentUpsertRequest) -> AgentResponse | None:
         if not self.relay_exists(request.machine_id):

@@ -286,7 +286,7 @@ Status meanings:
 | `sent` | Hub accepted the message. |
 | `delivered` | Target relay claimed the message. |
 | `submitted` | Local relay confirmed that the tmux submit key took effect. |
-| `acked` | Target agent printed `AGENTTALK_ACK:<message-id>`. |
+| `acked` | Target agent printed `AGENTTALK_ACK:<message-id>`. ACK is not a final answer; the target must continue the task until the done marker. |
 | `completed` | Target agent printed the done marker and a response was captured. |
 | `submit_unconfirmed` | Local relay suspects the text is still in the input box. Check the target machine's DLQ. |
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import nest_asyncio
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
@@ -13,7 +14,6 @@ from fastapi.responses import JSONResponse
 
 from agenttalk.hub.errors import api_error
 from agenttalk.hub.models import (
-    AgentAlert,
     AgentContextUpdateRequest,
     AgentHealthReport,
     AgentListResponse,
@@ -42,10 +42,13 @@ from agenttalk.hub.auth import AuthManager, AuthContext, get_auth_context
 from agenttalk.hub.settings import HubSettings
 from agenttalk.hub.store import AgentFilters, HubStore
 from agenttalk.hub.pty_manager import pty_manager
+from agenttalk.hub.relay_connection_manager import relay_manager, RelayConnection
 from agenttalk.tmux import TmuxClient
 from agenttalk.feishu.service import FeishuAgentTalkService
 from agenttalk.feishu.worker import FeishuEventHandler, FeishuLongConnectionWorker, LarkMessenger
 
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -178,21 +181,85 @@ def create_app(settings: HubSettings) -> FastAPI:
             await websocket.close()
             return
         tmux = TmuxClient()
-        await websocket.send_text(f"AgentTalk terminal connected: {short_id}\r\n")
-        try:
-            await websocket.send_text(tmux.capture_pane(agent.tmux_target, lines=80).replace("\n", "\r\n"))
-        except Exception as exc:
-            await websocket.send_text(f"\r\nUnable to capture tmux pane: {exc}\r\n")
+
+        def capture_registered_target() -> str:
+            if hasattr(tmux, "capture_output"):
+                return tmux.capture_output(agent.tmux_target, lines=120)
+            return tmux.capture_pane(agent.tmux_target, lines=120)
+
+        async def send_snapshot(*, force: bool = False) -> str:
+            try:
+                output = capture_registered_target().replace("\n", "\r\n")
+            except Exception as exc:
+                output = f"Unable to capture registered tmux target {agent.tmux_target}: {exc}\r\n"
+            if force or output != send_snapshot.last_output:
+                send_snapshot.last_output = output
+                await websocket.send_text("\x1b[2J\x1b[H" + output)
+            return output
+
+        send_snapshot.last_output = ""  # type: ignore[attr-defined]
+
+        async def stream_snapshots() -> None:
+            await send_snapshot(force=True)
+            while True:
+                await asyncio.sleep(0.5)
+                await send_snapshot()
+
+        stream_task = asyncio.create_task(stream_snapshots())
         try:
             while True:
                 data = await websocket.receive_text()
                 try:
                     tmux.inject_text(agent.tmux_target, data, submit=False)
-                    await websocket.send_text(data)
                 except Exception as exc:
                     await websocket.send_text(f"\r\nUnable to write tmux pane: {exc}\r\n")
         except Exception:
             return
+        finally:
+            stream_task.cancel()
+
+    @app.websocket("/ws/relay-terminal/{machine_id}")
+    async def relay_terminal_websocket(websocket: WebSocket, machine_id: str):
+        """Reverse tunnel endpoint for relays to connect to Hub."""
+        await websocket.accept()
+
+        # Wait for hello message with auth
+        try:
+            hello_raw = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+            hello = json.loads(hello_raw)
+            if hello.get("type") != "hello":
+                await websocket.close(code=4001, reason="Expected hello message")
+                return
+            token = hello.get("token", "")
+            if token != settings.token:
+                await websocket.close(code=4001, reason="Invalid token")
+                return
+        except (asyncio.TimeoutError, json.JSONDecodeError):
+            await websocket.close(code=4001, reason="Auth timeout or invalid JSON")
+            return
+
+        # Register relay connection
+        conn = RelayConnection(machine_id, websocket)
+        relay_manager.register(machine_id, conn)
+        await conn.send({"type": "hello_ok"})
+
+        try:
+            while True:
+                msg_raw = await websocket.receive_text()
+                msg = json.loads(msg_raw)
+                msg_type = msg.get("type", "")
+                session_id = msg.get("session_id", "")
+
+                if msg_type == "terminal_output":
+                    await relay_manager.handle_relay_output(session_id, msg.get("data", ""))
+                elif msg_type == "terminal_error":
+                    await relay_manager.handle_relay_error(session_id, msg.get("message", ""))
+                elif msg_type == "ping":
+                    await conn.send({"type": "pong", "session_id": session_id})
+        except Exception as exc:
+            logger.warning("Relay terminal websocket error for %s: %s", machine_id, exc)
+        finally:
+            relay_manager.unregister(machine_id)
 
     @app.websocket("/ws/pty/{short_id}")
     async def pty_websocket(websocket: WebSocket, short_id: str):
@@ -202,29 +269,39 @@ def create_app(settings: HubSettings) -> FastAPI:
             await websocket.close(code=4004, reason=f"Agent not found: {short_id}")
             return
 
-        # Send saved context first so user sees previous output immediately
-        try:
-            context = store.get_agent_context(short_id)
-            if context and context.context:
-                # Strip ANSI codes for clean display
-                import re
-                clean = re.sub(r'\x1b\[[0-9;]*[mKHJ]', '', context.context)
-                await websocket.send_text(f"\x1b[32m[Previous terminal output - {context.updated_at or 'unknown'}]\x1b[0m\r\n")
-                await websocket.send_text(clean.replace("\n", "\r\n") + "\r\n")
-                await websocket.send_text("\x1b[33m" + "=" * 40 + "\x1b[0m\r\n")
-        except Exception:
-            pass
+        # Try reverse tunnel first (for remote agents)
+        if relay_manager.is_connected(agent.machine_id):
+            session_id = await relay_manager.open_terminal(agent.machine_id, short_id, websocket)
+            if session_id:
+                try:
+                    while True:
+                        message = await websocket.receive()
+                        if "text" in message:
+                            text = message["text"]
+                            if text.startswith("\x01"):
+                                try:
+                                    _, rows, cols = text.split(":")
+                                    await relay_manager.send_resize(session_id, int(rows), int(cols))
+                                except (ValueError, IndexError):
+                                    pass
+                            else:
+                                await relay_manager.send_input(session_id, text)
+                        elif "bytes" in message:
+                            await relay_manager.send_input(session_id, message["bytes"].decode("utf-8", errors="replace"))
+                except Exception:
+                    pass
+                finally:
+                    await relay_manager.close_terminal(session_id)
+                return
 
+        # Fallback: local PTY (for agents on same machine as Hub)
         await websocket.send_text("\x1b[32m[Connected to PTY]\x1b[0m\r\n")
-
-        # Create or get PTY session
         try:
             session = pty_manager.get_or_create(short_id, agent.tmux_target)
         except Exception as exc:
             await websocket.send_text(f"\x1b[31m[Failed to create PTY: {exc}]\x1b[0m\r\n")
             return
 
-        # Handle resize messages and data
         read_task = None
         write_task = None
         try:
@@ -234,9 +311,8 @@ def create_app(settings: HubSettings) -> FastAPI:
             while True:
                 message = await websocket.receive()
                 if "text" in message:
-                    # Text message could be resize command or regular data
                     text = message["text"]
-                    if text.startswith("\x01"):  # Resize command prefix
+                    if text.startswith("\x01"):
                         try:
                             _, rows, cols = text.split(":")
                             session.set_size(int(rows), int(cols))

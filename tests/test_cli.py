@@ -98,11 +98,12 @@ def test_send_watch_calls_watcher_with_message_id_keyword(monkeypatch) -> None:
                 "status": "idle",
             }
 
-    def fake_post(*args, **kwargs) -> FakePostResponse:
-        return FakePostResponse()
-
-    def fake_get(*args, **kwargs) -> FakeAgentLookupResponse:
-        return FakeAgentLookupResponse()
+    def fake_hub_request(method, url, **_kwargs):
+        if method == "GET":
+            return FakeAgentLookupResponse()
+        if method == "POST":
+            return FakePostResponse()
+        raise AssertionError(f"unexpected method: {method} {url}")
 
     def fake_watch_message(*, message_id: str, resolved_hub_url: str, resolved_token: str, timeout: int) -> None:
         watched.update(
@@ -114,8 +115,7 @@ def test_send_watch_calls_watcher_with_message_id_keyword(monkeypatch) -> None:
             }
         )
 
-    monkeypatch.setattr(cli.httpx, "post", fake_post)
-    monkeypatch.setattr(cli.httpx, "get", fake_get)
+    monkeypatch.setattr(cli, "hub_request", fake_hub_request)
     monkeypatch.setattr(cli, "watch_message", fake_watch_message)
 
     result = runner.invoke(
@@ -174,8 +174,14 @@ def test_send_surfaces_evidence_trail(monkeypatch) -> None:
                 "status": "idle",
             }
 
-    monkeypatch.setattr(cli.httpx, "post", lambda *a, **k: FakePostResponse())
-    monkeypatch.setattr(cli.httpx, "get", lambda *a, **k: FakeAgentLookupResponse())
+    def fake_hub_request(method, url, **_kwargs):
+        if method == "GET":
+            return FakeAgentLookupResponse()
+        if method == "POST":
+            return FakePostResponse()
+        raise AssertionError(f"unexpected method: {method} {url}")
+
+    monkeypatch.setattr(cli, "hub_request", fake_hub_request)
 
     result = runner.invoke(
         app,

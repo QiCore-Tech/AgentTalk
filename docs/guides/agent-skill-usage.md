@@ -36,6 +36,27 @@ ln -s "$(pwd)/.agents/skills/agenttalk" ~/.agents/skills/agenttalk
 
 Use a copy instead of a symlink if your environment does not allow symlinks.
 
+## Receiving Messages
+
+When an AgentTalk message arrives, the agent should:
+
+- read the inbox file first when the prompt says `Full task is stored at ...`
+- print `AGENTTALK_ACK:<message-id>` once when requested
+- continue the task immediately after ACK
+- print the exact done marker only after the task is complete
+
+Agents should not edit `~/.agenttalk/delivery/` or run separate ACK scripts
+unless a specific task explicitly asks for that. Delivery tickets are owned by
+the local relay daemon; they are used to recover messages that remain in the
+terminal input box.
+
+If status becomes `submit_unconfirmed`, inspect:
+
+```bash
+agenttalk context <agent-id> --lines 120
+agenttalk dlq list
+```
+
 ## Agent Quick Check
 
 After loading the skill, an agent should be able to explain these commands:
