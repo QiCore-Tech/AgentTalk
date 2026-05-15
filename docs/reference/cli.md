@@ -76,6 +76,15 @@ uv run agenttalk send \
   --watch
 ```
 
+Send a multi-line message from stdin:
+
+```bash
+uv run agenttalk send --to alice-codex-api --message - --watch <<'EOF'
+Please review the API contract.
+Focus on error handling and return findings first.
+EOF
+```
+
 Send a human-facing Feishu alert from an agent:
 
 ```bash

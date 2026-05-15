@@ -75,6 +75,15 @@ For feedback you need to observe immediately, use `--watch`:
 agenttalk send --to alice-codex-api --message "Please review the API contract in docs/plans/example.md." --watch
 ```
 
+For multi-line tasks, write the task body on stdin:
+
+```bash
+agenttalk send --to alice-codex-api --message - --watch <<'EOF'
+Please review the API contract in docs/plans/example.md.
+Focus on error handling and return findings first.
+EOF
+```
+
 Do not treat Hub `completed` as sufficient proof unless the actual context or
 response contains the peer's answer after the injected task text. Some terminals
 echo the injected done marker.

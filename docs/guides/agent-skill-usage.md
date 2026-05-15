@@ -65,6 +65,9 @@ After loading the skill, an agent should be able to explain these commands:
 agenttalk list
 agenttalk context <agent-id> --lines 120
 agenttalk send --to <agent-id> --message "<task>" --watch
+agenttalk send --to <agent-id> --message - --watch <<'EOF'
+<multi-line task body written by the agent>
+EOF
 agenttalk alert --from <agent-id> --type warning --message "<brief alert>"
 agenttalk status <message-id>
 agenttalk response <message-id>

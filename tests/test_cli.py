@@ -208,6 +208,102 @@ def test_send_surfaces_evidence_trail(monkeypatch) -> None:
     assert "agenttalk context alice-codex-api" in result.output
 
 
+def test_send_reads_message_from_stdin(monkeypatch) -> None:
+    runner = CliRunner()
+    calls: list[dict] = []
+
+    class FakePostResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {
+                "message_id": "msg-stdin",
+                "target": "alice-codex-api",
+                "status": "sent",
+                "done_marker": "<<<AGENTTALK_DONE:msg-stdin>>>",
+            }
+
+    class FakeAgentLookupResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {
+                "short_id": "alice-codex-api",
+                "kind": "codex",
+                "receive_mode": "auto_submit",
+                "status": "idle",
+            }
+
+    def fake_hub_request(method, url, **kwargs):
+        calls.append({"method": method, "url": url, "json": kwargs.get("json")})
+        if method == "GET":
+            return FakeAgentLookupResponse()
+        if method == "POST":
+            return FakePostResponse()
+        raise AssertionError(f"unexpected method: {method} {url}")
+
+    monkeypatch.setattr(cli, "hub_request", fake_hub_request)
+
+    result = runner.invoke(
+        app,
+        [
+            "send",
+            "--to",
+            "alice-codex-api",
+            "--message",
+            "-",
+            "--hub-url",
+            "http://hub.local:8787",
+            "--token",
+            "test-token",
+        ],
+        input="line 1\nline 2\n",
+    )
+
+    assert result.exit_code == 0
+    post_call = next(call for call in calls if call["method"] == "POST")
+    assert post_call["json"] == {
+        "to": "alice-codex-api",
+        "body": "line 1\nline 2",
+        "sender": "cli",
+    }
+    assert "msg-stdin" in result.output
+    assert "message preview: line 1 line 2" in result.output
+
+
+def test_send_rejects_blank_message_before_hub_request(monkeypatch) -> None:
+    runner = CliRunner()
+    calls: list[dict] = []
+
+    def fake_hub_request(method, url, **kwargs):
+        calls.append({"method": method, "url": url, "json": kwargs.get("json")})
+        raise AssertionError("send should validate blank body before Hub request")
+
+    monkeypatch.setattr(cli, "hub_request", fake_hub_request)
+
+    result = runner.invoke(
+        app,
+        [
+            "send",
+            "--to",
+            "alice-codex-api",
+            "--message",
+            "-",
+            "--hub-url",
+            "http://hub.local:8787",
+            "--token",
+            "test-token",
+        ],
+        input="   \n\t\n",
+    )
+
+    assert result.exit_code != 0
+    assert "Message body cannot be empty" in result.output
+    assert calls == []
+
+
 def test_alert_posts_agent_warning_to_hub(monkeypatch) -> None:
     runner = CliRunner()
     calls: list[dict] = []

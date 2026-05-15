@@ -176,6 +176,25 @@ def _format_hub_request_error(exc: HubRequestError) -> str:
     )
 
 
+def _resolve_cli_body(value: str | None, *, field_name: str, prompt: str | None = None) -> str:
+    body = sys.stdin.read() if value == "-" else value
+    if body is None:
+        if prompt is None:
+            raise typer.BadParameter(f"{field_name} is required")
+        body = typer.prompt(prompt)
+    body = body.strip()
+    if not body:
+        raise typer.BadParameter(f"{field_name} cannot be empty")
+    return body
+
+
+def _message_preview(body: str, *, limit: int = 120) -> str:
+    preview = " ".join(body.split())
+    if len(preview) <= limit:
+        return preview
+    return preview[: limit - 3].rstrip() + "..."
+
+
 @hub_app.command("serve")
 def serve_hub(
     host: Annotated[str, typer.Option(help="Host to bind.")] = "127.0.0.1",
@@ -446,7 +465,7 @@ def mode(
 @app.command("send")
 def send_message(
     to: Annotated[str, typer.Option(help="Target agent short ID.")],
-    message: Annotated[str, typer.Option(help="Message body.")],
+    message: Annotated[str, typer.Option(help="Message body. Use '-' to read from stdin.")],
     sender: Annotated[str, typer.Option(help="Sender label or agent short ID.")] = "cli",
     hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
     token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
@@ -459,6 +478,7 @@ def send_message(
     if not resolved_token:
         raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    message_body = _resolve_cli_body(message, field_name="Message body")
     # Issue 6: look up the target's receive_mode BEFORE creating the message so
     # the CLI surface tells the caller whether to expect auto_submit or
     # paste_only behaviour. This is best-effort; if the lookup fails we still
@@ -480,7 +500,7 @@ def send_message(
         "POST",
         f"{resolved_hub_url.rstrip('/')}/api/messages",
         headers=auth_headers(resolved_token),
-        json={"to": to, "body": message, "sender": sender},
+        json={"to": to, "body": message_body, "sender": sender},
         timeout=10,
     )
     if response.status_code >= 400:
@@ -490,6 +510,7 @@ def send_message(
     typer.echo(f"message: {payload['message_id']}")
     typer.echo(f"to: {payload['target']}")
     typer.echo(f"status: {payload['status']}")
+    typer.echo(f"message preview: {_message_preview(message_body)}")
     typer.echo(f"done marker: {payload['done_marker']}")
     if target_receive_mode:
         typer.echo(f"target receive_mode: {target_receive_mode}")
@@ -526,12 +547,7 @@ def create_alert(
     if not resolved_token:
         raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
-    alert_message = sys.stdin.read() if message == "-" else message
-    if alert_message is None:
-        alert_message = typer.prompt("Alert message")
-    alert_message = alert_message.strip()
-    if not alert_message:
-        raise typer.BadParameter("Alert message cannot be empty")
+    alert_message = _resolve_cli_body(message, field_name="Alert message", prompt="Alert message")
     response = _hub_request_or_exit(
         "POST",
         f"{resolved_hub_url.rstrip('/')}/api/alerts",
