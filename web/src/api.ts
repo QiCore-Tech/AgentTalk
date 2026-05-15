@@ -214,7 +214,7 @@ export async function listTasks(): Promise<Task[]> {
 }
 
 export async function submitTask(rawRequest: string, targetMachineId: number): Promise<{ task_id: string; status: string }> {
-  return request('/api/tasks', {
+  return request('/api/orchestrator/tasks', {
     method: 'POST',
     body: JSON.stringify({ raw_request: rawRequest, target_machine_id: targetMachineId }),
   })
