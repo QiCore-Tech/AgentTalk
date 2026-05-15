@@ -15,6 +15,7 @@ services:
       AGENTTALK_DATABASE: "/data/agenttalk-dev.sqlite3"
       AGENTTALK_PUBLIC_BASE_URL: "${AGENTTALK_PUBLIC_BASE_URL:-}"
       AUTH_MODE: "${AUTH_MODE:-both}"
+      JWT_SECRET: "${JWT_SECRET:-agenttalk-jwt-secret-key-2024}"
       CASDOOR_ENDPOINT: "https://auth.qicore.tech"
       CASDOOR_CLIENT_ID: "9caee569d9c32f80761b8ea1"
       CASDOOR_CLIENT_SECRET: "613a07305415aa9d5ea9db416d4dee0f6224fd8f"

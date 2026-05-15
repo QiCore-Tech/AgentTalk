@@ -817,17 +817,27 @@ def create_app(settings: HubSettings) -> FastAPI:
         if settings.auth_mode not in ("casdoor", "both"):
             raise api_error(400, "auth_mode_not_supported", "Casdoor auth is not enabled")
         try:
+            import logging
+            logger = logging.getLogger(__name__)
+            
             # Build redirect_uri from current request (must match authorize request)
             redirect_uri = str(request.url).split('?')[0]
             
+            logger.info(f"OAuth callback received: code={code[:10]}..., redirect_uri={redirect_uri}")
+            
             # Exchange code for token
             token_data = auth_manager.exchange_casdoor_code(code, redirect_uri)
+            logger.info(f"Token exchange success: {token_data}")
+            
             access_token = token_data.get("access_token")
             if not access_token:
+                logger.error("No access_token in response")
                 return _oauth_error_html("No access token in response")
             
             # Get user info
             user_info = auth_manager.get_casdoor_user_info(access_token)
+            logger.info(f"User info: {user_info}")
+            
             user_id = user_info.get("id", user_info.get("name", ""))
             username = user_info.get("name", "")
             display_name = user_info.get("displayName", username)

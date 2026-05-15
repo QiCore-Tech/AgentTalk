@@ -203,12 +203,15 @@ class AuthManager:
             error_desc = result.get("error_description", result["error"])
             raise HTTPException(status_code=400, detail=f"OAuth error: {error_desc}")
         
-        # Check for Casdoor custom format
-        if result.get("status") != "ok":
+        # Check for Casdoor custom error format
+        if result.get("status") == "error":
             error_msg = result.get("msg", "Casdoor authentication failed")
+            logger.error(f"Casdoor authentication failed. Full response: {result}")
+            logger.error(f"Request data: client_id={self.casdoor_client_id}, redirect_uri={redirect_uri}")
             raise HTTPException(status_code=400, detail=f"Casdoor error: {error_msg}")
-            
-        return result.get("data", {})
+        
+        # Success - Casdoor returns standard OAuth format (access_token, id_token, etc.)
+        return result
 
     def get_casdoor_user_info(self, access_token: str) -> dict:
         """Get user info from Casdoor using access token."""
