@@ -205,6 +205,14 @@ def serve_hub(
         feishu_app_id=resolved_feishu_app_id,
         feishu_app_secret=resolved_feishu_app_secret,
         feishu_alert_chat_id=os.environ.get("FEISHU_ALERT_CHAT_ID", ""),
+        auth_mode=os.environ.get("AUTH_MODE", "token"),
+        casdoor_endpoint=os.environ.get("CASDOOR_ENDPOINT", ""),
+        casdoor_client_id=os.environ.get("CASDOOR_CLIENT_ID", ""),
+        casdoor_client_secret=os.environ.get("CASDOOR_CLIENT_SECRET", ""),
+        casdoor_app_name=os.environ.get("CASDOOR_APP_NAME", ""),
+        casdoor_org_name=os.environ.get("CASDOOR_ORG_NAME", ""),
+        jwt_secret=os.environ.get("JWT_SECRET", ""),
+        jwt_expiry_hours=int(os.environ.get("JWT_EXPIRY_HOURS", "24")),
     )
     uvicorn.run(create_app(settings), host=host, port=port, loop="asyncio")
 

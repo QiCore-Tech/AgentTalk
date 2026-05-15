@@ -260,6 +260,19 @@ class HubStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_bindings_user ON user_feishu_bindings(user_id);
                 CREATE INDEX IF NOT EXISTS idx_bindings_openid ON user_feishu_bindings(open_id);
+
+                -- Local users (for username/password auth)
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT UNIQUE NOT NULL,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    display_name TEXT DEFAULT '',
+                    email TEXT DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_users_user_id ON users(user_id);
+                CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
                 """
             )
 
@@ -1399,4 +1412,66 @@ class HubStore:
             "open_id": str(row["open_id"]),
             "bot_id": row["bot_id"],
             "bound_at": str(row["bound_at"]),
+        }
+
+    # ==================== Local User Management ====================
+
+    def create_user(self, user_id: str, username: str, password_hash: str, display_name: str = "", email: str = "") -> dict:
+        """Register a new local user."""
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            try:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO users (user_id, username, password_hash, display_name, email, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (user_id, username, password_hash, display_name, email, now),
+                )
+                return {
+                    "id": cursor.lastrowid,
+                    "user_id": user_id,
+                    "username": username,
+                    "display_name": display_name,
+                    "email": email,
+                    "created_at": now,
+                }
+            except sqlite3.IntegrityError:
+                raise ValueError(f"User already exists: {username}")
+
+    def get_user_by_username(self, username: str) -> dict | None:
+        """Get user by username."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE username = ?",
+                (username,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "user_id": str(row["user_id"]),
+            "username": str(row["username"]),
+            "password_hash": str(row["password_hash"]),
+            "display_name": str(row["display_name"]),
+            "email": str(row["email"]),
+            "created_at": str(row["created_at"]),
+        }
+
+    def get_user_by_id(self, user_id: str) -> dict | None:
+        """Get user by user_id."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "user_id": str(row["user_id"]),
+            "username": str(row["username"]),
+            "display_name": str(row["display_name"]),
+            "email": str(row["email"]),
+            "created_at": str(row["created_at"]),
         }

@@ -237,6 +237,27 @@ export async function exchangeCasdoorCode(code: string): Promise<{ token: string
   })
 }
 
+export async function registerLocalUser(
+  username: string,
+  password: string,
+  displayName: string = '',
+): Promise<{ token: string; user: { user_id: string; username: string; display_name: string } }> {
+  return request('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, password, display_name: displayName }),
+  })
+}
+
+export async function loginLocalUser(
+  username: string,
+  password: string,
+): Promise<{ token: string; user: { user_id: string; username: string; display_name: string; email: string } }> {
+  return request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  })
+}
+
 export async function getCurrentUser(): Promise<UserInfo> {
   return request('/api/auth/me')
 }

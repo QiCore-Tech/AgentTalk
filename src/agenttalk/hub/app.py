@@ -836,6 +836,88 @@ def create_app(settings: HubSettings) -> FastAPI:
         except Exception as exc:
             raise api_error(500, "casdoor_error", str(exc))
 
+    @app.post("/api/auth/register")
+    def register_local_user(
+        request: dict,
+        hub_store: HubStore = Depends(get_store),
+    ) -> dict:
+        """Register a new local user with username/password."""
+        if settings.auth_mode not in ("local", "both"):
+            raise api_error(400, "auth_mode_not_supported", "Local auth is not enabled")
+        
+        username = request.get("username", "").strip()
+        password = request.get("password", "")
+        display_name = request.get("display_name", "").strip()
+        
+        if not username or len(username) < 3:
+            raise api_error(400, "invalid_request", "Username must be at least 3 characters")
+        if not password or len(password) < 6:
+            raise api_error(400, "invalid_request", "Password must be at least 6 characters")
+        
+        import hashlib, uuid
+        user_id = f"local-{uuid.uuid4().hex[:12]}"
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        try:
+            user = hub_store.create_user(
+                user_id=user_id,
+                username=username,
+                password_hash=password_hash,
+                display_name=display_name or username,
+            )
+            jwt_token = auth_manager.create_local_jwt(user_id, username, display_name or username)
+            return {
+                "token": jwt_token,
+                "user": {
+                    "user_id": user_id,
+                    "username": username,
+                    "display_name": display_name or username,
+                },
+            }
+        except ValueError as exc:
+            raise api_error(409, "user_exists", str(exc))
+        except Exception as exc:
+            raise api_error(500, "registration_failed", str(exc))
+
+    @app.post("/api/auth/login")
+    def login_local_user(
+        request: dict,
+        hub_store: HubStore = Depends(get_store),
+    ) -> dict:
+        """Login with username/password."""
+        if settings.auth_mode not in ("local", "both"):
+            raise api_error(400, "auth_mode_not_supported", "Local auth is not enabled")
+        
+        username = request.get("username", "").strip()
+        password = request.get("password", "")
+        
+        if not username or not password:
+            raise api_error(400, "invalid_request", "Username and password are required")
+        
+        import hashlib
+        user = hub_store.get_user_by_username(username)
+        if not user:
+            raise api_error(401, "invalid_credentials", "Invalid username or password")
+        
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        if password_hash != user["password_hash"]:
+            raise api_error(401, "invalid_credentials", "Invalid username or password")
+        
+        jwt_token = auth_manager.create_local_jwt(
+            user["user_id"],
+            user["username"],
+            user["display_name"],
+        )
+        return {
+            "token": jwt_token,
+            "user": {
+                "user_id": user["user_id"],
+                "username": user["username"],
+                "display_name": user["display_name"],
+                "email": user.get("email", ""),
+            },
+        }
+
     # ==================== Machine APIs ====================
 
     @app.post("/api/machines/register-request")

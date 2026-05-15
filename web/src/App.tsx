@@ -29,6 +29,8 @@ import {
   getLoginUrl,
   exchangeCasdoorCode,
   getCurrentUser,
+  registerLocalUser,
+  loginLocalUser,
 } from './api'
 import {
   isLoggedIn,
@@ -223,6 +225,12 @@ function App() {
   if (authState === 'logged_out' || authState === 'checking') {
     return (
       <LoginPage
+        onLogin={(token, userInfo) => {
+          setToken(token)
+          setUser(userInfo)
+          setUserInfo(userInfo)
+          setAuthState('logged_in')
+        }}
         loading={authState === 'checking'}
         error={authError}
         onClearError={() => setAuthError('')}
@@ -1805,27 +1813,68 @@ function NotificationsPage({ agents }: { agents: Agent[] }) {
 }
 
 function LoginPage({
-  loading,
-  error,
+  onLogin,
+  loading: initialLoading,
+  error: initialError,
   onClearError,
 }: {
+  onLogin: (token: string, user: UserInfo) => void
   loading: boolean
   error: string
   onClearError: () => void
 }) {
-  const [loggingIn, setLoggingIn] = useState(false)
+  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [localError, setLocalError] = useState('')
 
-  const handleLogin = async () => {
-    if (loggingIn) return
-    setLoggingIn(true)
+  const handleOAuthLogin = async () => {
+    if (submitting) return
+    setSubmitting(true)
     onClearError()
     try {
       const data = await getLoginUrl()
       window.location.href = data.login_url
     } catch (err) {
-      setLoggingIn(false)
+      setSubmitting(false)
+      setLocalError('OAuth service not available. Please use local login.')
     }
   }
+
+  const handleLocalSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (submitting) return
+    setSubmitting(true)
+    onClearError()
+    setLocalError('')
+
+    try {
+      if (mode === 'register') {
+        const data = await registerLocalUser(username, password, displayName)
+        onLogin(data.token, {
+          user_id: data.user.user_id,
+          username: data.user.username,
+          display_name: data.user.display_name,
+          email: '',
+        })
+      } else {
+        const data = await loginLocalUser(username, password)
+        onLogin(data.token, {
+          user_id: data.user.user_id,
+          username: data.user.username,
+          display_name: data.user.display_name,
+          email: data.user.email,
+        })
+      }
+    } catch (err: any) {
+      setLocalError(err.message || 'Authentication failed')
+      setSubmitting(false)
+    }
+  }
+
+  const displayError = localError || initialError
 
   return (
     <div
@@ -1844,7 +1893,7 @@ function LoginPage({
           border: '1px solid var(--border)',
           borderRadius: '12px',
           padding: '3rem',
-          maxWidth: '400px',
+          maxWidth: '420px',
           width: '90%',
           textAlign: 'center',
         }}
@@ -1852,10 +1901,10 @@ function LoginPage({
         <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🔐</div>
         <h1 style={{ marginBottom: '0.5rem' }}>AgentTalk</h1>
         <p style={{ color: 'var(--text-muted)', marginBottom: '2rem' }}>
-          Sign in to manage your agents
+          {mode === 'login' ? 'Sign in to manage your agents' : 'Create a new account'}
         </p>
 
-        {error && (
+        {displayError && (
           <div
             style={{
               background: 'rgba(244, 112, 103, 0.1)',
@@ -1867,33 +1916,97 @@ function LoginPage({
               fontSize: '0.85rem',
             }}
           >
-            {error}
+            {displayError}
           </div>
         )}
 
-        <button
-          className="primary"
-          onClick={handleLogin}
-          disabled={loggingIn || loading}
-          style={{
-            width: '100%',
-            padding: '0.875rem',
-            fontSize: '1rem',
-            opacity: loggingIn || loading ? 0.6 : 1,
-          }}
-        >
-          {loading ? 'Processing...' : loggingIn ? 'Redirecting...' : 'Sign in with OAuth'}
-        </button>
+        <form onSubmit={handleLocalSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', textAlign: 'left' }}>
+          {mode === 'register' && (
+            <div>
+              <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 500, marginBottom: '0.25rem' }}>
+                Display Name
+              </label>
+              <input
+                type="text"
+                placeholder="Your name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                style={{ width: '100%' }}
+              />
+            </div>
+          )}
+          <div>
+            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 500, marginBottom: '0.25rem' }}>
+              Username
+            </label>
+            <input
+              type="text"
+              placeholder="Enter username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+              minLength={3}
+              style={{ width: '100%' }}
+            />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 500, marginBottom: '0.25rem' }}>
+              Password
+            </label>
+            <input
+              type="password"
+              placeholder="Enter password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={6}
+              style={{ width: '100%' }}
+            />
+          </div>
+          <button
+            type="submit"
+            className="primary"
+            disabled={submitting || initialLoading}
+            style={{
+              width: '100%',
+              padding: '0.875rem',
+              fontSize: '1rem',
+              marginTop: '0.5rem',
+              opacity: submitting || initialLoading ? 0.6 : 1,
+            }}
+          >
+            {submitting || initialLoading ? 'Processing...' : mode === 'login' ? 'Sign In' : 'Create Account'}
+          </button>
+        </form>
 
-        <p
-          style={{
-            marginTop: '1.5rem',
-            fontSize: '0.75rem',
-            color: 'var(--text-muted)',
-          }}
-        >
-          Secure authentication via Casdoor
-        </p>
+        <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <button
+            className="secondary"
+            onClick={handleOAuthLogin}
+            disabled={submitting || initialLoading}
+            style={{ width: '100%' }}
+          >
+            Sign in with OAuth (Casdoor)
+          </button>
+
+          <button
+            onClick={() => {
+              setMode(mode === 'login' ? 'register' : 'login')
+              setLocalError('')
+              onClearError()
+            }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--brand)',
+              cursor: 'pointer',
+              fontSize: '0.85rem',
+              padding: '0.5rem',
+            }}
+          >
+            {mode === 'login' ? "Don't have an account? Register" : 'Already have an account? Sign In'}
+          </button>
+        </div>
       </div>
     </div>
   )
