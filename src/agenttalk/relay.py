@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -832,18 +833,26 @@ class AgentTalkRelay:
                 if instruction_type == "shell":
                     command = instruction.get("command", "")
                     logger.info("Executing shell instruction: %s", command)
-                    os.system(command)
+                    result = subprocess.run(
+                        command, shell=True, capture_output=True, text=True, timeout=300
+                    )
+                    logger.info(
+                        "Shell command completed: rc=%d, stdout=%s, stderr=%s",
+                        result.returncode,
+                        result.stdout[:200],
+                        result.stderr[:200],
+                    )
                 elif instruction_type == "provision_agent":
                     kind = instruction.get("kind", "codex")
                     short_id = instruction.get("short_id", "")
                     workspace = instruction.get("workspace", "")
                     logger.info("Provisioning agent: %s (%s) in %s", short_id, kind, workspace)
-                    # TODO: start agent in tmux
+                    self._provision_agent(kind, short_id, workspace)
                 elif instruction_type == "send_message":
                     target = instruction.get("to", "")
                     body = instruction.get("body", "")
                     logger.info("Sending message to %s: %s", target, body)
-                    # TODO: inject into tmux pane
+                    self._inject_message(target, body)
                 else:
                     logger.warning("Unknown instruction type: %s", instruction_type)
 
@@ -854,6 +863,41 @@ class AgentTalkRelay:
                 logger.exception("Failed to execute instruction %s: %s", instruction_id, exc)
 
         return count
+
+    def _provision_agent(self, kind: str, short_id: str, workspace: str) -> None:
+        """Provision a new agent in tmux."""
+        session_name = short_id.replace("_", "-").replace(".", "-")
+        # Create tmux session
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", session_name, "-c", workspace],
+            capture_output=True,
+        )
+        # Start agent
+        if kind == "codex":
+            cmd = f"codex --name {short_id}"
+        elif kind == "claude":
+            cmd = f"claude --name {short_id}"
+        else:
+            cmd = kind
+        subprocess.run(
+            ["tmux", "send-keys", "-t", session_name, cmd, "C-m"],
+            capture_output=True,
+        )
+        logger.info("Agent %s started in tmux session %s", short_id, session_name)
+
+    def _inject_message(self, target: str, body: str) -> None:
+        """Inject a message into a tmux pane."""
+        # Find the tmux session for this agent
+        binding = next(
+            (agent for agent in self.config.agents if agent.short_id == target),
+            None,
+        )
+        if binding is None:
+            logger.warning("No binding found for agent %s", target)
+            return
+        # Inject text
+        self.tmux_client.inject_text(binding.tmux_target, body, submit=True)
+        logger.info("Message injected into %s", binding.tmux_target)
 
 
 class StaticTmuxClient(TmuxProcessManager):

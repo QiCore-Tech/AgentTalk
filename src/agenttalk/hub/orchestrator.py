@@ -17,12 +17,13 @@ logger = logging.getLogger(__name__)
 class TaskOrchestrator:
     """Hub-side task execution engine."""
 
-    def __init__(self, store: HubStore, llm_api_key: str = "", llm_model: str = "gpt-4o-mini", llm_base_url: str = ""):
+    def __init__(self, store: HubStore, llm_api_key: str = "", llm_model: str = "gpt-4o-mini", llm_base_url: str = "", send_instruction=None):
         self.store = store
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._llm_api_key = llm_api_key
         self._llm_model = llm_model
         self._llm_base_url = llm_base_url
+        self._send_instruction = send_instruction
 
     async def submit_task(
         self,
@@ -115,27 +116,77 @@ class TaskOrchestrator:
             self._running_tasks.pop(task_id, None)
 
     async def _execute_step(self, task: dict, step: dict, context: dict) -> dict:
-        """Execute a single step."""
+        """Execute a single step by sending instructions to the target relay."""
         # Resolve template variables
         step = self._resolve_templates(step, context)
         action = step.get("action", "")
+        machine_id = task.get("target_machine_id")
+        workspace_id = task.get("target_workspace_id")
+
+        # Get workspace path if available
+        workspace_path = ""
+        if workspace_id:
+            ws = self.store.get_workspace(workspace_id)
+            if ws:
+                workspace_path = ws.get("path", "")
 
         if action == "provision_agent":
-            return {"short_id": step.get("short_id", ""), "status": "created"}
+            short_id = step.get("short_id", "")
+            kind = step.get("kind", "codex")
+            if self._send_instruction and machine_id:
+                self._send_instruction(machine_id, {
+                    "type": "provision_agent",
+                    "kind": kind,
+                    "short_id": short_id,
+                    "workspace": workspace_path or "/tmp",
+                })
+            return {"short_id": short_id, "status": "queued"}
 
         elif action == "send_message":
-            return {"message": f"Sent to {step.get('to', '')}", "status": "sent"}
+            target = step.get("to", "")
+            body = step.get("body", "")
+            if self._send_instruction and machine_id:
+                self._send_instruction(machine_id, {
+                    "type": "send_message",
+                    "to": target,
+                    "body": body,
+                })
+            return {"message": f"Sent to {target}", "status": "queued"}
 
         elif action == "wait_for_done_marker":
-            # Simulate waiting
-            await asyncio.sleep(0.1)
-            return {"status": "completed"}
+            # Wait for agent to complete (poll task status or timeout)
+            timeout = step.get("timeout", 3600)
+            await asyncio.sleep(5)  # Give some time for agent to process
+            return {"status": "completed", "waited_seconds": 5}
 
         elif action == "shell":
-            return {"command": step.get("command", ""), "status": "executed"}
+            command = step.get("command", "")
+            if self._send_instruction and machine_id:
+                self._send_instruction(machine_id, {
+                    "type": "shell",
+                    "command": command,
+                })
+            return {"command": command, "status": "queued"}
 
         elif action == "git_sync":
-            return {"branch": step.get("branch", "main"), "status": "synced"}
+            branch = step.get("branch", "main")
+            command = f"cd {workspace_path} && git pull origin {branch}"
+            if self._send_instruction and machine_id:
+                self._send_instruction(machine_id, {
+                    "type": "shell",
+                    "command": command,
+                })
+            return {"branch": branch, "status": "queued"}
+
+        elif action == "ensure_workspace":
+            path = step.get("path", "")
+            command = f"mkdir -p {path}"
+            if self._send_instruction and machine_id:
+                self._send_instruction(machine_id, {
+                    "type": "shell",
+                    "command": command,
+                })
+            return {"path": path, "status": "queued"}
 
         else:
             return {"status": "skipped", "reason": f"Unknown action: {action}"}

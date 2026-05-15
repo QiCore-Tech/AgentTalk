@@ -19,8 +19,13 @@ import {
   type NotificationRoute,
   type Task,
   listFeishuBots,
+  createFeishuBot,
+  deleteFeishuBot,
   listNotificationRoutes,
+  createNotificationRoute,
+  deleteNotificationRoute,
   listTasks,
+  submitTask,
 } from './api'
 import './App.css'
 
@@ -1475,14 +1480,49 @@ function LiveTerminal({ agent }: { agent: Agent }) {
 function BotsPage() {
   const [bots, setBots] = useState<FeishuBot[]>([])
   const [error, setError] = useState('')
+  const [newBot, setNewBot] = useState({ name: '', appId: '', appSecret: '' })
+
+  const refresh = () => {
+    listFeishuBots().then(setBots).catch((e) => setError(String(e)))
+  }
 
   useEffect(() => {
-    listFeishuBots().then(setBots).catch((e) => setError(String(e)))
+    refresh()
   }, [])
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    try {
+      await createFeishuBot(newBot.name, newBot.appId, newBot.appSecret)
+      setNewBot({ name: '', appId: '', appSecret: '' })
+      refresh()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  const handleDelete = async (id: number) => {
+    if (!confirm('Delete this bot?')) return
+    try {
+      await deleteFeishuBot(id)
+      refresh()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
 
   return (
     <div className="pageContent">
       {error ? <div className="error">{error}</div> : null}
+      <div className="card">
+        <h2>Register New Bot</h2>
+        <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <input placeholder="Bot Name" value={newBot.name} onChange={(e) => setNewBot({ ...newBot, name: e.target.value })} />
+          <input placeholder="App ID" value={newBot.appId} onChange={(e) => setNewBot({ ...newBot, appId: e.target.value })} />
+          <input placeholder="App Secret" type="password" value={newBot.appSecret} onChange={(e) => setNewBot({ ...newBot, appSecret: e.target.value })} />
+          <button type="submit">Register Bot</button>
+        </form>
+      </div>
       <div className="card">
         <h2>Registered Feishu Bots</h2>
         {bots.length === 0 ? (
@@ -1492,6 +1532,8 @@ function BotsPage() {
             {bots.map((bot) => (
               <li key={bot.id}>
                 {bot.name} ({bot.app_id}) - {bot.status}
+                {' '}
+                <button onClick={() => handleDelete(bot.id)} className="secondary">Delete</button>
               </li>
             ))}
           </ul>
@@ -1504,26 +1546,74 @@ function BotsPage() {
 function TasksPage() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [error, setError] = useState('')
+  const [newTask, setNewTask] = useState({ rawRequest: '', machineId: '1' })
+
+  const refresh = () => {
+    listTasks().then(setTasks).catch((e) => setError(String(e)))
+  }
 
   useEffect(() => {
-    listTasks().then(setTasks).catch((e) => setError(String(e)))
+    refresh()
+    const interval = setInterval(refresh, 3000)
+    return () => clearInterval(interval)
   }, [])
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    try {
+      await submitTask(newTask.rawRequest, parseInt(newTask.machineId))
+      setNewTask({ rawRequest: '', machineId: '1' })
+      refresh()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
 
   return (
     <div className="pageContent">
       {error ? <div className="error">{error}</div> : null}
       <div className="card">
+        <h2>Submit New Task</h2>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <textarea
+            placeholder="Describe what you want the agent to do..."
+            value={newTask.rawRequest}
+            onChange={(e) => setNewTask({ ...newTask, rawRequest: e.target.value })}
+            rows={3}
+          />
+          <input
+            placeholder="Machine ID"
+            value={newTask.machineId}
+            onChange={(e) => setNewTask({ ...newTask, machineId: e.target.value })}
+          />
+          <button type="submit">Submit Task</button>
+        </form>
+      </div>
+      <div className="card">
         <h2>Tasks</h2>
         {tasks.length === 0 ? (
           <p>No tasks yet.</p>
         ) : (
-          <ul>
-            {tasks.map((task) => (
-              <li key={task.task_id}>
-                {task.task_id}: {task.status} - {task.raw_request}
-              </li>
-            ))}
-          </ul>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th>Task ID</th>
+                <th>Status</th>
+                <th>Progress</th>
+                <th>Request</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tasks.map((task) => (
+                <tr key={task.task_id}>
+                  <td>{task.task_id}</td>
+                  <td>{task.status}</td>
+                  <td>{task.current_step}/{task.total_steps}</td>
+                  <td>{task.raw_request}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     </div>
@@ -1534,12 +1624,46 @@ function NotificationsPage({ agents }: { agents: Agent[] }) {
   const [routes, setRoutes] = useState<NotificationRoute[]>([])
   const [error, setError] = useState('')
   const [selectedAgent, setSelectedAgent] = useState('')
+  const [newRoute, setNewRoute] = useState({ eventType: 'alert', destinationType: 'group', destinationId: '', feishuBotId: '1' })
 
-  useEffect(() => {
+  const refresh = () => {
     if (selectedAgent) {
       listNotificationRoutes(selectedAgent).then(setRoutes).catch((e) => setError(String(e)))
     }
+  }
+
+  useEffect(() => {
+    refresh()
   }, [selectedAgent])
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedAgent) return
+    try {
+      await createNotificationRoute(
+        selectedAgent,
+        newRoute.eventType,
+        newRoute.destinationType,
+        newRoute.destinationId,
+        parseInt(newRoute.feishuBotId)
+      )
+      setNewRoute({ eventType: 'alert', destinationType: 'group', destinationId: '', feishuBotId: '1' })
+      refresh()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  const handleDelete = async (routeId: number) => {
+    if (!selectedAgent) return
+    if (!confirm('Delete this route?')) return
+    try {
+      await deleteNotificationRoute(selectedAgent, routeId)
+      refresh()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
 
   return (
     <div className="pageContent">
@@ -1554,12 +1678,30 @@ function NotificationsPage({ agents }: { agents: Agent[] }) {
             </option>
           ))}
         </select>
+        {selectedAgent && (
+          <form onSubmit={handleCreate} style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem', flexWrap: 'wrap' }}>
+            <select value={newRoute.eventType} onChange={(e) => setNewRoute({ ...newRoute, eventType: e.target.value })}>
+              <option value="alert">alert</option>
+              <option value="message">message</option>
+              <option value="status_change">status_change</option>
+            </select>
+            <select value={newRoute.destinationType} onChange={(e) => setNewRoute({ ...newRoute, destinationType: e.target.value })}>
+              <option value="group">group</option>
+              <option value="private">private</option>
+            </select>
+            <input placeholder="Destination ID" value={newRoute.destinationId} onChange={(e) => setNewRoute({ ...newRoute, destinationId: e.target.value })} />
+            <input placeholder="Bot ID" value={newRoute.feishuBotId} onChange={(e) => setNewRoute({ ...newRoute, feishuBotId: e.target.value })} />
+            <button type="submit">Add Route</button>
+          </form>
+        )}
         {selectedAgent && routes.length === 0 && <p>No routes for this agent.</p>}
         {routes.length > 0 && (
           <ul>
             {routes.map((route) => (
               <li key={route.id}>
-                {route.event_type} -&gt; {route.destination_type}:{route.destination_id}
+                {route.event_type} -&gt; {route.destination_type}:{route.destination_id} (bot {route.feishu_bot_id})
+                {' '}
+                <button onClick={() => handleDelete(route.id)} className="secondary">Delete</button>
               </li>
             ))}
           </ul>

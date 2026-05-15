@@ -100,6 +100,25 @@ def create_app(settings: HubSettings) -> FastAPI:
         _instruction_counter += 1
         return f"instr-{_instruction_counter:06d}"
 
+    def _send_instruction(machine_id: str, instruction: dict) -> str:
+        """Queue an instruction for a relay."""
+        if not store.relay_exists(machine_id):
+            raise ValueError(f"Relay not found: {machine_id}")
+        instr_id = _next_instruction_id()
+        instruction["id"] = instr_id
+        instruction.setdefault("created_at", str(datetime.now(UTC).isoformat()))
+        _instruction_queues.setdefault(machine_id, []).append(instruction)
+        return instr_id
+
+    # Initialize orchestrator with instruction sender
+    orchestrator = TaskOrchestrator(
+        store,
+        llm_api_key=settings.llm_api_key if hasattr(settings, 'llm_api_key') else "",
+        llm_model=settings.llm_model if hasattr(settings, 'llm_model') else "gpt-4o-mini",
+        llm_base_url=settings.llm_base_url if hasattr(settings, 'llm_base_url') else "",
+        send_instruction=_send_instruction,
+    )
+
     async def capture_pty_outputs() -> None:
         """Background task to capture PTY outputs periodically."""
         while True:
