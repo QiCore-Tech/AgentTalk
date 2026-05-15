@@ -173,7 +173,7 @@ class AuthManager:
         url = f"{self.casdoor_endpoint}/api/login/oauth/access_token"
         response = httpx.post(
             url,
-            data={
+            json={
                 "grant_type": "authorization_code",
                 "client_id": self.casdoor_client_id,
                 "client_secret": self.casdoor_client_secret,
