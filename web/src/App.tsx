@@ -31,9 +31,7 @@ import {
   getCurrentUser,
   registerLocalUser,
   loginLocalUser,
-  getAuthConfig,
 } from './api'
-import type { AuthConfig } from './api'
 import {
   isLoggedIn,
   clearAuth,
@@ -1831,14 +1829,6 @@ function LoginPage({
   const [displayName, setDisplayName] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [localError, setLocalError] = useState('')
-  const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null)
-
-  useEffect(() => {
-    getAuthConfig()
-      .then(setAuthConfig)
-      .catch(() => setAuthConfig({ auth_mode: 'token', local_enabled: false, casdoor_enabled: false, token_enabled: true }))
-  }, [])
-
   const handleOAuthLogin = async () => {
     if (submitting) return
     setSubmitting(true)
@@ -1989,34 +1979,30 @@ function LoginPage({
         </form>
 
         <div style={{ marginTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-          {authConfig?.casdoor_enabled && (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-                <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                  or continue with
-                </span>
-                <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
-              </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+            <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+              or continue with
+            </span>
+            <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+          </div>
 
-              <button
-                className="secondary"
-                onClick={handleOAuthLogin}
-                disabled={submitting || initialLoading}
-                style={{
-                  width: '100%',
-                  padding: '0.75rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '0.5rem',
-                }}
-              >
-                <span>🔑</span>
-                <span>Sign in with OAuth (Casdoor)</span>
-              </button>
-            </>
-          )}
+          <button
+            className="secondary"
+            onClick={handleOAuthLogin}
+            disabled={submitting || initialLoading}
+            style={{
+              width: '100%',
+              padding: '0.75rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.5rem',
+            }}
+          >
+            <span>🔑</span>
+            <span>Sign in with OAuth (Casdoor)</span>
+          </button>
 
           <button
             onClick={() => {
