@@ -26,7 +26,18 @@ import {
   deleteNotificationRoute,
   listTasks,
   submitTask,
+  getLoginUrl,
+  exchangeCasdoorCode,
+  getCurrentUser,
 } from './api'
+import {
+  isLoggedIn,
+  clearAuth,
+  getUser,
+  setToken,
+  setUser,
+  type UserInfo,
+} from './auth'
 import './App.css'
 
 type Page = 'agents' | 'context' | 'detail' | 'quickstart' | 'settings' | 'bots' | 'tasks' | 'notifications'
@@ -41,6 +52,11 @@ function App() {
     return (localStorage.getItem('theme') as 'light' | 'dark') || 'dark'
   })
   const [agents, setAgents] = useState<Agent[]>([])
+  const [authState, setAuthState] = useState<'checking' | 'logged_in' | 'logged_out'>(() =>
+    isLoggedIn() ? 'logged_in' : 'logged_out',
+  )
+  const [user, setUserInfo] = useState<UserInfo | null>(getUser)
+  const [authError, setAuthError] = useState('')
 
   // Theme effect
   useEffect(() => {
@@ -49,6 +65,59 @@ function App() {
   }, [theme])
 
   const toggleTheme = () => setTheme(theme === 'light' ? 'dark' : 'light')
+
+  // Handle OAuth callback (check URL for code)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get('code')
+    if (code && authState === 'logged_out') {
+      setAuthState('checking')
+      exchangeCasdoorCode(code)
+        .then((data) => {
+          setToken(data.token)
+          const userInfo: UserInfo = {
+            user_id: data.user_id,
+            username: data.username,
+            display_name: data.display_name,
+            email: '',
+          }
+          setUser(userInfo)
+          setUserInfo(userInfo)
+          setAuthState('logged_in')
+          // Clean URL
+          window.history.replaceState({}, '', window.location.pathname)
+        })
+        .catch((err) => {
+          setAuthError(err instanceof Error ? err.message : String(err))
+          setAuthState('logged_out')
+        })
+    }
+  }, [authState])
+
+  // Fetch current user info when logged in
+  useEffect(() => {
+    if (authState === 'logged_in') {
+      getCurrentUser()
+        .then((u) => {
+          setUser(u)
+          setUserInfo(u)
+        })
+        .catch(() => {
+          // Token invalid, logout
+          handleLogout()
+        })
+    }
+  }, [authState])
+
+  const handleLogout = () => {
+    clearAuth()
+    setUserInfo(null)
+    setAuthState('logged_out')
+    setAgents([])
+    setContexts({})
+    setMessages([])
+  }
+
   const [selectedId, setSelectedId] = useState('')
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -150,6 +219,17 @@ function App() {
     }
   }
 
+  // Show login page if not authenticated
+  if (authState === 'logged_out' || authState === 'checking') {
+    return (
+      <LoginPage
+        loading={authState === 'checking'}
+        error={authError}
+        onClearError={() => setAuthError('')}
+      />
+    )
+  }
+
   return (
     <main className="shell">
       <button className="menuToggle" onClick={() => setMenuOpen(!menuOpen)} aria-label="Menu">
@@ -209,6 +289,19 @@ function App() {
           <span>{agents.length} Registered</span>
           <span>{agents.filter((a) => a.status !== 'offline').length} Online</span>
         </div>
+        {user && (
+          <div className="sidebarUser" style={{ padding: '1rem', borderTop: '1px solid var(--border)', marginTop: 'auto' }}>
+            <div style={{ fontSize: '0.85rem', fontWeight: 500, marginBottom: '0.25rem' }}>
+              {user.display_name || user.username}
+            </div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+              {user.user_id}
+            </div>
+            <button className="secondary small" onClick={handleLogout} style={{ width: '100%' }}>
+              Logout
+            </button>
+          </div>
+        )}
       </aside>
 
       <section className="workspace">
@@ -1706,6 +1799,101 @@ function NotificationsPage({ agents }: { agents: Agent[] }) {
             ))}
           </ul>
         )}
+      </div>
+    </div>
+  )
+}
+
+function LoginPage({
+  loading,
+  error,
+  onClearError,
+}: {
+  loading: boolean
+  error: string
+  onClearError: () => void
+}) {
+  const [loggingIn, setLoggingIn] = useState(false)
+
+  const handleLogin = async () => {
+    if (loggingIn) return
+    setLoggingIn(true)
+    onClearError()
+    try {
+      const data = await getLoginUrl()
+      window.location.href = data.login_url
+    } catch (err) {
+      setLoggingIn(false)
+    }
+  }
+
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: 'var(--bg-app)',
+        color: 'var(--text-main)',
+      }}
+    >
+      <div
+        style={{
+          background: 'var(--bg-card)',
+          border: '1px solid var(--border)',
+          borderRadius: '12px',
+          padding: '3rem',
+          maxWidth: '400px',
+          width: '90%',
+          textAlign: 'center',
+        }}
+      >
+        <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🔐</div>
+        <h1 style={{ marginBottom: '0.5rem' }}>AgentTalk</h1>
+        <p style={{ color: 'var(--text-muted)', marginBottom: '2rem' }}>
+          Sign in to manage your agents
+        </p>
+
+        {error && (
+          <div
+            style={{
+              background: 'rgba(244, 112, 103, 0.1)',
+              border: '1px solid #f47067',
+              color: '#f47067',
+              padding: '0.75rem',
+              borderRadius: '6px',
+              marginBottom: '1rem',
+              fontSize: '0.85rem',
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        <button
+          className="primary"
+          onClick={handleLogin}
+          disabled={loggingIn || loading}
+          style={{
+            width: '100%',
+            padding: '0.875rem',
+            fontSize: '1rem',
+            opacity: loggingIn || loading ? 0.6 : 1,
+          }}
+        >
+          {loading ? 'Processing...' : loggingIn ? 'Redirecting...' : 'Sign in with OAuth'}
+        </button>
+
+        <p
+          style={{
+            marginTop: '1.5rem',
+            fontSize: '0.75rem',
+            color: 'var(--text-muted)',
+          }}
+        >
+          Secure authentication via Casdoor
+        </p>
       </div>
     </div>
   )

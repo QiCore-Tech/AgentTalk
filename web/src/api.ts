@@ -35,12 +35,16 @@ export interface AgentContext {
   updated_at: string | null
 }
 
+import { getToken } from './auth'
+import type { UserInfo } from './auth'
+
 const API_BASE = import.meta.env.VITE_AGENTTALK_API_BASE || ''
 const TOKEN = import.meta.env.VITE_AGENTTALK_TOKEN || ''
 
 function headers() {
+  const token = getToken() || TOKEN
   return {
-    Authorization: `Bearer ${TOKEN}`,
+    Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
   }
 }
@@ -218,4 +222,21 @@ export async function submitTask(rawRequest: string, targetMachineId: number): P
     method: 'POST',
     body: JSON.stringify({ raw_request: rawRequest, target_machine_id: targetMachineId }),
   })
+}
+
+// ==================== Auth APIs ====================
+
+export async function getLoginUrl(): Promise<{ login_url: string }> {
+  return request('/api/auth/casdoor/login')
+}
+
+export async function exchangeCasdoorCode(code: string): Promise<{ token: string; user_id: string; username: string; display_name: string }> {
+  return request('/api/auth/casdoor/callback', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  })
+}
+
+export async function getCurrentUser(): Promise<UserInfo> {
+  return request('/api/auth/me')
 }
