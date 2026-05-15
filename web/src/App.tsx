@@ -1805,7 +1805,7 @@ function LoginPage({
     setSubmitting(true)
     onClearError()
     try {
-      const redirectUri = `${window.location.origin}/api/auth/casdoor/callback`
+      const redirectUri = `http://localhost:8788/api/auth/casdoor/callback`
       const data = await getLoginUrl(redirectUri)
       window.location.href = data.login_url
     } catch (err) {
