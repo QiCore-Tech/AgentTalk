@@ -53,6 +53,8 @@ from agenttalk.hub.relay_connection_manager import relay_manager, RelayConnectio
 from agenttalk.tmux import TmuxClient
 from agenttalk.feishu.service import FeishuAgentTalkService
 from agenttalk.feishu.worker import FeishuEventHandler, FeishuLongConnectionWorker, LarkMessenger
+from agenttalk.hub.orchestrator import TaskOrchestrator
+from agenttalk.hub.feishu_bot_manager import FeishuBotManager
 
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,8 @@ def create_app(settings: HubSettings) -> FastAPI:
 
     feishu_messenger: LarkMessenger | None = None
     feishu_service: FeishuAgentTalkService | None = None
+    orchestrator = TaskOrchestrator(store)
+    bot_manager = FeishuBotManager(store)
 
     async def capture_pty_outputs() -> None:
         """Background task to capture PTY outputs periodically."""
@@ -1029,6 +1033,62 @@ def create_app(settings: HubSettings) -> FastAPI:
         ):
             return {"user_id": request.token, "status": "bound"}
         raise api_error(400, "bind_failed", "Failed to bind Feishu account")
+
+    # ==================== Orchestrator Task APIs ====================
+
+    @app.post("/api/orchestrator/tasks")
+    async def submit_orchestrator_task(
+        request: TaskCreateRequest,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Submit a new orchestrator task."""
+        task_id = await orchestrator.submit_task(
+            user_id=auth.user_id,
+            raw_request=request.raw_request,
+            target_machine_id=request.target_machine_id,
+            target_workspace_id=request.target_workspace_id,
+        )
+        return {"task_id": task_id, "status": "queued"}
+
+    @app.post("/api/orchestrator/tasks/{task_id}/cancel")
+    def cancel_orchestrator_task(
+        task_id: str,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Cancel a running orchestrator task."""
+        if orchestrator.cancel_task(task_id):
+            return {"ok": True, "status": "cancelled"}
+        raise api_error(404, "task_not_found", "Task not found or not running")
+
+    # ==================== Bot Manager APIs ====================
+
+    @app.post("/api/feishu/bots/{bot_id}/test")
+    def test_feishu_bot(
+        bot_id: int,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Test a Feishu bot connection."""
+        bot = hub_store.get_feishu_bot(bot_id)
+        if not bot:
+            raise api_error(404, "bot_not_found", "Bot not found")
+        status = bot_manager.get_bot_status(bot_id)
+        return {"ok": True, "bot": status}
+
+    @app.post("/api/agents/{short_id}/notify")
+    def send_agent_notification(
+        short_id: str,
+        body: dict,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Send a notification for an agent via configured routes."""
+        event_type = body.get("event_type", "alert")
+        message = body.get("message", "")
+        results = bot_manager.send_notification(short_id, event_type, message)
+        return {"agent": short_id, "event": event_type, "results": results}
 
     if settings.web_dist_path and settings.web_dist_path.exists():
         app.mount("/", StaticFiles(directory=settings.web_dist_path, html=True), name="web")
