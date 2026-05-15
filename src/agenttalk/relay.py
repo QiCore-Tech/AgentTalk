@@ -493,6 +493,7 @@ class AgentTalkRelay:
         for step in (
             self.sync_once,
             self.process_next_message_once,
+            self.process_instructions_once,
             self.recover_delivery_tickets_once,
             self.update_watches_once,
         ):
@@ -810,6 +811,48 @@ class AgentTalkRelay:
                 continue
             self.hub_client.update_agent_context(binding.short_id, context)
             count += 1
+        return count
+
+    def process_instructions_once(self) -> int:
+        """Poll and execute instructions from Hub."""
+        count = 0
+        try:
+            instructions = self.hub_client.get_instructions(self.config.machine_id)
+        except HubRequestError as exc:
+            logger.warning("AgentTalk relay instructions poll failed: %s", exc)
+            return 0
+        except Exception:
+            logger.exception("AgentTalk relay instructions poll failed")
+            return 0
+
+        for instruction in instructions:
+            instruction_id = instruction.get("id", "")
+            instruction_type = instruction.get("type", "")
+            try:
+                if instruction_type == "shell":
+                    command = instruction.get("command", "")
+                    logger.info("Executing shell instruction: %s", command)
+                    os.system(command)
+                elif instruction_type == "provision_agent":
+                    kind = instruction.get("kind", "codex")
+                    short_id = instruction.get("short_id", "")
+                    workspace = instruction.get("workspace", "")
+                    logger.info("Provisioning agent: %s (%s) in %s", short_id, kind, workspace)
+                    # TODO: start agent in tmux
+                elif instruction_type == "send_message":
+                    target = instruction.get("to", "")
+                    body = instruction.get("body", "")
+                    logger.info("Sending message to %s: %s", target, body)
+                    # TODO: inject into tmux pane
+                else:
+                    logger.warning("Unknown instruction type: %s", instruction_type)
+
+                # Acknowledge
+                self.hub_client.ack_instruction(self.config.machine_id, instruction_id)
+                count += 1
+            except Exception as exc:
+                logger.exception("Failed to execute instruction %s: %s", instruction_id, exc)
+
         return count
 
 

@@ -127,3 +127,95 @@ export async function setAgentAutoResume(shortId: string, config: AutoResumeConf
     body: JSON.stringify(config),
   })
 }
+
+// ==================== Feishu Bot APIs ====================
+
+export interface FeishuBot {
+  id: number
+  user_id: string
+  name: string
+  app_id: string
+  app_secret: string
+  status: string
+  created_at: string
+}
+
+export async function listFeishuBots(): Promise<FeishuBot[]> {
+  const payload = await request<{ bots: FeishuBot[] }>('/api/feishu/bots')
+  return payload.bots
+}
+
+export async function createFeishuBot(name: string, appId: string, appSecret: string): Promise<{ id: number; status: string }> {
+  return request('/api/feishu/bots', {
+    method: 'POST',
+    body: JSON.stringify({ name, app_id: appId, app_secret: appSecret }),
+  })
+}
+
+export async function deleteFeishuBot(botId: number): Promise<void> {
+  await request<void>(`/api/feishu/bots/${botId}`, { method: 'DELETE' })
+}
+
+// ==================== Notification Route APIs ====================
+
+export interface NotificationRoute {
+  id: number
+  agent_short_id: string
+  user_id: string
+  event_type: string
+  destination_type: string
+  destination_id: string
+  feishu_bot_id: number
+  enabled: boolean
+  created_at: string
+}
+
+export async function listNotificationRoutes(agentShortId: string): Promise<NotificationRoute[]> {
+  const payload = await request<{ routes: NotificationRoute[] }>(`/api/agents/${encodeURIComponent(agentShortId)}/notifications`)
+  return payload.routes
+}
+
+export async function createNotificationRoute(
+  agentShortId: string,
+  eventType: string,
+  destinationType: string,
+  destinationId: string,
+  feishuBotId: number,
+): Promise<{ route_id: number; enabled: boolean }> {
+  return request(`/api/agents/${encodeURIComponent(agentShortId)}/notifications`, {
+    method: 'POST',
+    body: JSON.stringify({ agent_short_id: agentShortId, event_type: eventType, destination_type: destinationType, destination_id: destinationId, feishu_bot_id: feishuBotId }),
+  })
+}
+
+export async function deleteNotificationRoute(agentShortId: string, routeId: number): Promise<void> {
+  await request<void>(`/api/agents/${encodeURIComponent(agentShortId)}/notifications/${routeId}`, { method: 'DELETE' })
+}
+
+// ==================== Task APIs ====================
+
+export interface Task {
+  id: number
+  task_id: string
+  type: string
+  status: string
+  owner_id: string
+  raw_request: string
+  result: string
+  logs: string
+  created_at: string
+  current_step: number
+  total_steps: number
+}
+
+export async function listTasks(): Promise<Task[]> {
+  const payload = await request<{ tasks: Task[] }>('/api/tasks')
+  return payload.tasks
+}
+
+export async function submitTask(rawRequest: string, targetMachineId: number): Promise<{ task_id: string; status: string }> {
+  return request('/api/tasks', {
+    method: 'POST',
+    body: JSON.stringify({ raw_request: rawRequest, target_machine_id: targetMachineId }),
+  })
+}

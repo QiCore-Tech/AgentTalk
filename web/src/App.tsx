@@ -15,10 +15,16 @@ import {
   sendMessage,
   setAgentAutoResume,
   setLLMConfig,
+  type FeishuBot,
+  type NotificationRoute,
+  type Task,
+  listFeishuBots,
+  listNotificationRoutes,
+  listTasks,
 } from './api'
 import './App.css'
 
-type Page = 'agents' | 'context' | 'detail' | 'quickstart' | 'settings'
+type Page = 'agents' | 'context' | 'detail' | 'quickstart' | 'settings' | 'bots' | 'tasks' | 'notifications'
 
 function statusLabel(status: Agent['status']) {
   return status.charAt(0).toUpperCase() + status.slice(1)
@@ -180,6 +186,15 @@ function App() {
           <button className={page === 'settings' ? 'active' : ''} onClick={() => { setPage('settings'); setMenuOpen(false) }}>
             Settings
           </button>
+          <button className={page === 'bots' ? 'active' : ''} onClick={() => { setPage('bots'); setMenuOpen(false) }}>
+            Feishu Bots
+          </button>
+          <button className={page === 'tasks' ? 'active' : ''} onClick={() => { setPage('tasks'); setMenuOpen(false) }}>
+            Tasks
+          </button>
+          <button className={page === 'notifications' ? 'active' : ''} onClick={() => { setPage('notifications'); setMenuOpen(false) }}>
+            Notifications
+          </button>
 
           <button className="themeToggle secondary" onClick={toggleTheme}>
             {theme === 'light' ? '🌙 Dark' : '☀️ Light'}
@@ -201,7 +216,13 @@ function App() {
                   ? 'Agent Detail'
                   : page === 'quickstart'
                     ? 'Quick Start Guide'
-                    : 'Agents'}
+                    : page === 'bots'
+                      ? 'Feishu Bots'
+                      : page === 'tasks'
+                        ? 'Task Center'
+                        : page === 'notifications'
+                          ? 'Notification Routes'
+                          : 'Agents'}
             </h1>
             <p>
               {page === 'quickstart'
@@ -260,6 +281,12 @@ function App() {
         {page === 'quickstart' && <QuickStart />}
 
         {page === 'settings' && <SettingsPage />}
+
+        {page === 'bots' && <BotsPage />}
+
+        {page === 'tasks' && <TasksPage />}
+
+        {page === 'notifications' && <NotificationsPage agents={agents} />}
 
         {/* Mobile Bottom Navigation */}
         <nav className="bottomNav">
@@ -1443,6 +1470,103 @@ function LiveTerminal({ agent }: { agent: Agent }) {
   }, [agent.short_id])
 
   return <div className="terminal" data-testid="live-terminal" ref={ref} tabIndex={0} role="textbox" aria-label="Terminal" />
+}
+
+function BotsPage() {
+  const [bots, setBots] = useState<FeishuBot[]>([])
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    listFeishuBots().then(setBots).catch((e) => setError(String(e)))
+  }, [])
+
+  return (
+    <div className="pageContent">
+      {error ? <div className="error">{error}</div> : null}
+      <div className="card">
+        <h2>Registered Feishu Bots</h2>
+        {bots.length === 0 ? (
+          <p>No bots registered.</p>
+        ) : (
+          <ul>
+            {bots.map((bot) => (
+              <li key={bot.id}>
+                {bot.name} ({bot.app_id}) - {bot.status}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function TasksPage() {
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    listTasks().then(setTasks).catch((e) => setError(String(e)))
+  }, [])
+
+  return (
+    <div className="pageContent">
+      {error ? <div className="error">{error}</div> : null}
+      <div className="card">
+        <h2>Tasks</h2>
+        {tasks.length === 0 ? (
+          <p>No tasks yet.</p>
+        ) : (
+          <ul>
+            {tasks.map((task) => (
+              <li key={task.task_id}>
+                {task.task_id}: {task.status} - {task.raw_request}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function NotificationsPage({ agents }: { agents: Agent[] }) {
+  const [routes, setRoutes] = useState<NotificationRoute[]>([])
+  const [error, setError] = useState('')
+  const [selectedAgent, setSelectedAgent] = useState('')
+
+  useEffect(() => {
+    if (selectedAgent) {
+      listNotificationRoutes(selectedAgent).then(setRoutes).catch((e) => setError(String(e)))
+    }
+  }, [selectedAgent])
+
+  return (
+    <div className="pageContent">
+      {error ? <div className="error">{error}</div> : null}
+      <div className="card">
+        <h2>Notification Routes</h2>
+        <select value={selectedAgent} onChange={(e) => setSelectedAgent(e.target.value)}>
+          <option value="">Select Agent</option>
+          {agents.map((agent) => (
+            <option key={agent.short_id} value={agent.short_id}>
+              {agent.short_id}
+            </option>
+          ))}
+        </select>
+        {selectedAgent && routes.length === 0 && <p>No routes for this agent.</p>}
+        {routes.length > 0 && (
+          <ul>
+            {routes.map((route) => (
+              <li key={route.id}>
+                {route.event_type} -&gt; {route.destination_type}:{route.destination_id}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
 }
 
 export default App

@@ -27,6 +27,11 @@ class HubSettings:
     local_auth_enabled: bool = False
     jwt_secret: str = ""
     jwt_expiry_hours: int = 24
+    # LLM settings for task parsing
+    llm_enabled: bool = False
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = "gpt-4o-mini"
 
 
 def default_database_path() -> Path:

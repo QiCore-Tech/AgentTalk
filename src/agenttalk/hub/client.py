@@ -154,6 +154,28 @@ class HubClient:
         )
         response.raise_for_status()
 
+    def get_instructions(self, machine_id: str) -> list[dict]:
+        """Poll instructions from Hub for this relay."""
+        response = request(
+            "GET",
+            f"{self.hub_url}/api/relays/{machine_id}/instructions",
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("instructions", [])
+
+    def ack_instruction(self, machine_id: str, instruction_id: str) -> None:
+        """Acknowledge an instruction as processed."""
+        response = request(
+            "POST",
+            f"{self.hub_url}/api/relays/{machine_id}/instructions/{instruction_id}/ack",
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+
     def get_agent_context(self, short_id: str) -> dict:
         response = request(
             "GET",

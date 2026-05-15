@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -82,8 +83,22 @@ def create_app(settings: HubSettings) -> FastAPI:
 
     feishu_messenger: LarkMessenger | None = None
     feishu_service: FeishuAgentTalkService | None = None
-    orchestrator = TaskOrchestrator(store)
+    orchestrator = TaskOrchestrator(
+        store,
+        llm_api_key=settings.llm_api_key if hasattr(settings, 'llm_api_key') else "",
+        llm_model=settings.llm_model if hasattr(settings, 'llm_model') else "gpt-4o-mini",
+        llm_base_url=settings.llm_base_url if hasattr(settings, 'llm_base_url') else "",
+    )
     bot_manager = FeishuBotManager(store)
+
+    # In-memory instruction queue for relays (machine_id -> list of instructions)
+    _instruction_counter = 0
+    _instruction_queues: dict[str, list[dict]] = {}
+
+    def _next_instruction_id() -> str:
+        nonlocal _instruction_counter
+        _instruction_counter += 1
+        return f"instr-{_instruction_counter:06d}"
 
     async def capture_pty_outputs() -> None:
         """Background task to capture PTY outputs periodically."""
@@ -374,6 +389,68 @@ def create_app(settings: HubSettings) -> FastAPI:
         if relay is None:
             raise api_error(404, "relay_not_found", f"Relay not found: {request.machine_id}")
         return relay
+
+    # ==================== Relay Instruction APIs ====================
+
+    @app.post(
+        "/api/relays/{machine_id}/instructions",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}},
+    )
+    def create_instruction(
+        machine_id: str,
+        body: dict,
+        hub_store: HubStore = Depends(get_store),
+    ) -> dict:
+        """Queue an instruction for a relay."""
+        if not hub_store.relay_exists(machine_id):
+            raise api_error(404, "relay_not_found", f"Relay not found: {machine_id}")
+        instr_id = _next_instruction_id()
+        instruction = {
+            "id": instr_id,
+            "type": body.get("type", ""),
+            "command": body.get("command", ""),
+            "kind": body.get("kind", ""),
+            "short_id": body.get("short_id", ""),
+            "workspace": body.get("workspace", ""),
+            "to": body.get("to", ""),
+            "body": body.get("body", ""),
+            "created_at": str(datetime.now(UTC).isoformat()),
+        }
+        _instruction_queues.setdefault(machine_id, []).append(instruction)
+        return {"instruction_id": instr_id, "status": "queued"}
+
+    @app.get(
+        "/api/relays/{machine_id}/instructions",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}},
+    )
+    def get_instructions(
+        machine_id: str,
+        hub_store: HubStore = Depends(get_store),
+    ) -> dict:
+        """Poll instructions for a relay."""
+        if not hub_store.relay_exists(machine_id):
+            raise api_error(404, "relay_not_found", f"Relay not found: {machine_id}")
+        instructions = _instruction_queues.get(machine_id, [])
+        return {"instructions": instructions}
+
+    @app.post(
+        "/api/relays/{machine_id}/instructions/{instruction_id}/ack",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}},
+    )
+    def ack_instruction(
+        machine_id: str,
+        instruction_id: str,
+        hub_store: HubStore = Depends(get_store),
+    ) -> dict:
+        """Acknowledge an instruction as processed."""
+        if not hub_store.relay_exists(machine_id):
+            raise api_error(404, "relay_not_found", f"Relay not found: {machine_id}")
+        queue = _instruction_queues.get(machine_id, [])
+        _instruction_queues[machine_id] = [i for i in queue if i["id"] != instruction_id]
+        return {"ok": True}
 
     @app.put(
         "/api/agents",

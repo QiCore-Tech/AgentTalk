@@ -17,9 +17,12 @@ logger = logging.getLogger(__name__)
 class TaskOrchestrator:
     """Hub-side task execution engine."""
 
-    def __init__(self, store: HubStore):
+    def __init__(self, store: HubStore, llm_api_key: str = "", llm_model: str = "gpt-4o-mini", llm_base_url: str = ""):
         self.store = store
         self._running_tasks: dict[str, asyncio.Task] = {}
+        self._llm_api_key = llm_api_key
+        self._llm_model = llm_model
+        self._llm_base_url = llm_base_url
 
     async def submit_task(
         self,
@@ -31,6 +34,23 @@ class TaskOrchestrator:
     ) -> str:
         """Submit a new task for execution."""
         task_id = f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+
+        # If no parsed_steps provided, try to parse with LLM
+        if parsed_steps is None and self._llm_api_key:
+            try:
+                from agenttalk.hub.task_parser import TaskParser
+                parser = TaskParser(
+                    api_key=self._llm_api_key,
+                    model=self._llm_model,
+                    base_url=self._llm_base_url or None,
+                )
+                parsed = await parser.parse(raw_request)
+                parsed_steps = parsed.get("steps", [])
+            except Exception as exc:
+                logger.warning("LLM task parsing failed: %s. Using fallback.", exc)
+                parsed_steps = [{"step": 1, "action": "shell", "command": f"echo 'Task: {raw_request}'"}]
+        elif parsed_steps is None:
+            parsed_steps = [{"step": 1, "action": "shell", "command": f"echo 'Task: {raw_request}'"}]
 
         steps_json = json.dumps(parsed_steps) if parsed_steps else "[]"
 
