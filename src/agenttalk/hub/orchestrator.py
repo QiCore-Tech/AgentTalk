@@ -123,6 +123,15 @@ class TaskOrchestrator:
         machine_id = task.get("target_machine_id")
         workspace_id = task.get("target_workspace_id")
 
+        # Resolve machine_id integer to relay_machine_id string
+        relay_machine_id = None
+        if machine_id:
+            machine = self.store.get_machine(int(machine_id))
+            if machine:
+                relay_machine_id = machine.get("relay_machine_id")
+            else:
+                raise ValueError(f"Machine not found: {machine_id}")
+
         # Get workspace path if available
         workspace_path = ""
         if workspace_id:
@@ -133,8 +142,8 @@ class TaskOrchestrator:
         if action == "provision_agent":
             short_id = step.get("short_id", "")
             kind = step.get("kind", "codex")
-            if self._send_instruction and machine_id:
-                self._send_instruction(machine_id, {
+            if self._send_instruction and relay_machine_id:
+                self._send_instruction(relay_machine_id, {
                     "type": "provision_agent",
                     "kind": kind,
                     "short_id": short_id,
@@ -145,8 +154,8 @@ class TaskOrchestrator:
         elif action == "send_message":
             target = step.get("to", "")
             body = step.get("body", "")
-            if self._send_instruction and machine_id:
-                self._send_instruction(machine_id, {
+            if self._send_instruction and relay_machine_id:
+                self._send_instruction(relay_machine_id, {
                     "type": "send_message",
                     "to": target,
                     "body": body,
@@ -161,8 +170,8 @@ class TaskOrchestrator:
 
         elif action == "shell":
             command = step.get("command", "")
-            if self._send_instruction and machine_id:
-                self._send_instruction(machine_id, {
+            if self._send_instruction and relay_machine_id:
+                self._send_instruction(relay_machine_id, {
                     "type": "shell",
                     "command": command,
                 })
@@ -171,8 +180,8 @@ class TaskOrchestrator:
         elif action == "git_sync":
             branch = step.get("branch", "main")
             command = f"cd {workspace_path} && git pull origin {branch}"
-            if self._send_instruction and machine_id:
-                self._send_instruction(machine_id, {
+            if self._send_instruction and relay_machine_id:
+                self._send_instruction(relay_machine_id, {
                     "type": "shell",
                     "command": command,
                 })
@@ -181,8 +190,8 @@ class TaskOrchestrator:
         elif action == "ensure_workspace":
             path = step.get("path", "")
             command = f"mkdir -p {path}"
-            if self._send_instruction and machine_id:
-                self._send_instruction(machine_id, {
+            if self._send_instruction and relay_machine_id:
+                self._send_instruction(relay_machine_id, {
                     "type": "shell",
                     "command": command,
                 })
