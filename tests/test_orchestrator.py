@@ -34,6 +34,14 @@ class TestTaskOrchestrator:
         assert task["raw_request"] == "Create a codex agent"
 
     async def test_execute_task_steps(self, orchestrator, store):
+        # Create a machine so orchestrator can resolve machine_id to relay_machine_id
+        store.create_machine(
+            user_id="user1",
+            name="test-machine",
+            host_name="test.local",
+            relay_machine_id="test-relay",
+            capabilities=["shell"],
+        )
         parsed_steps = [
             {"step": 1, "action": "shell", "command": "echo hello"},
             {"step": 2, "action": "provision_agent", "kind": "codex", "short_id": "test-agent"},
@@ -54,6 +62,14 @@ class TestTaskOrchestrator:
         assert "shell" in task["logs"] or "completed" in task["logs"]
 
     async def test_cancel_task(self, orchestrator, store):
+        # Create a machine so orchestrator can resolve machine_id
+        store.create_machine(
+            user_id="user1",
+            name="test-machine",
+            host_name="test.local",
+            relay_machine_id="test-relay",
+            capabilities=["shell"],
+        )
         # Create a task with a long wait
         parsed_steps = [
             {"step": 1, "action": "wait_for_done_marker", "agent_id": "test", "timeout": 3600},
