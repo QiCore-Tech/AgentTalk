@@ -262,3 +262,55 @@ class TaskListResponse(BaseModel):
 class PermissionGrantRequest(BaseModel):
     user_id: str = Field(min_length=1)
     permission: Permission = Permission.VIEW
+
+
+# ==================== Feishu Bot / Notification Models ====================
+
+class FeishuBotCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    app_id: str = Field(min_length=1, max_length=120)
+    app_secret: str = Field(min_length=1, max_length=255)
+
+
+class FeishuBotResponse(BaseModel):
+    id: int
+    user_id: str
+    name: str
+    app_id: str
+    app_secret: str = "***"
+    status: str
+    created_at: str
+
+
+class FeishuBotListResponse(BaseModel):
+    bots: list[FeishuBotResponse]
+
+
+class NotificationRouteCreateRequest(BaseModel):
+    agent_short_id: str = Field(min_length=1, max_length=120)
+    event_type: str = Field(min_length=1, max_length=80)
+    destination_type: str = Field(min_length=1, max_length=20)
+    destination_id: str = Field(min_length=1, max_length=255)
+    feishu_bot_id: int = Field(ge=1)
+
+
+class NotificationRouteResponse(BaseModel):
+    id: int
+    agent_short_id: str
+    user_id: str
+    event_type: str
+    destination_type: str
+    destination_id: str
+    feishu_bot_id: int
+    enabled: bool
+    created_at: str
+
+
+class NotificationRouteListResponse(BaseModel):
+    routes: list[NotificationRouteResponse]
+
+
+class FeishuBindRequest(BaseModel):
+    open_id: str = Field(min_length=1)
+    bot_id: int = Field(ge=1)
+    token: str = Field(min_length=1)

@@ -931,3 +931,147 @@ def doctor(
     typer.echo(f"local bindings: {len(config.agents)}")
     for binding in config.agents:
         typer.echo(f"  {binding.short_id}: {binding.kind} {binding.tmux_target} {binding.receive_mode.value}")
+
+
+# ==================== Feishu Bot CLI ====================
+
+feishu_app = typer.Typer(help="Manage Feishu bots.")
+app.add_typer(feishu_app, name="feishu")
+
+
+@feishu_app.command("add")
+def feishu_bot_add(
+    name: Annotated[str, typer.Option(help="Bot name.", prompt=True)],
+    app_id: Annotated[str, typer.Option(help="Feishu app ID.", prompt=True)],
+    app_secret: Annotated[str, typer.Option(help="Feishu app secret.", prompt=True, hide_input=True)],
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    """Register a new Feishu bot."""
+    config = load_config(config_path)
+    url = f"{config.hub_url.rstrip('/')}/api/feishu/bots"
+    try:
+        response = hub_request(
+            "POST",
+            url,
+            json={"name": name, "app_id": app_id, "app_secret": app_secret},
+        )
+        typer.echo(f"Bot registered: {response.json()}")
+    except HubRequestError as exc:
+        typer.echo(f"error: {_format_hub_request_error(exc)}", err=True)
+        raise typer.Exit(1)
+
+
+@feishu_app.command("list")
+def feishu_bot_list(
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    """List registered Feishu bots."""
+    config = load_config(config_path)
+    url = f"{config.hub_url.rstrip('/')}/api/feishu/bots"
+    try:
+        response = hub_request("GET", url)
+        data = response.json()
+        bots = data.get("bots", [])
+        if not bots:
+            typer.echo("No Feishu bots registered.")
+            return
+        for bot in bots:
+            typer.echo(f"  {bot['id']}: {bot['name']} ({bot['app_id']}) [{bot['status']}]")
+    except HubRequestError as exc:
+        typer.echo(f"error: {_format_hub_request_error(exc)}", err=True)
+        raise typer.Exit(1)
+
+
+@feishu_app.command("remove")
+def feishu_bot_remove(
+    bot_id: Annotated[int, typer.Argument(help="Bot ID.")],
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    """Remove a Feishu bot."""
+    config = load_config(config_path)
+    url = f"{config.hub_url.rstrip('/')}/api/feishu/bots/{bot_id}"
+    try:
+        response = hub_request("DELETE", url)
+        typer.echo(f"Bot removed: {response.json()}")
+    except HubRequestError as exc:
+        typer.echo(f"error: {_format_hub_request_error(exc)}", err=True)
+        raise typer.Exit(1)
+
+
+# ==================== Notification Route CLI ====================
+
+notification_app = typer.Typer(help="Manage agent notification routes.")
+app.add_typer(notification_app, name="notification")
+
+
+@notification_app.command("route-add")
+def notification_route_add(
+    agent: Annotated[str, typer.Option(help="Agent short ID.", prompt=True)],
+    event: Annotated[str, typer.Option(help="Event type (alert/message/status_change).", prompt=True)],
+    destination_type: Annotated[str, typer.Option(help="Destination type (group/private).", prompt=True)],
+    destination_id: Annotated[str, typer.Option(help="Chat ID or Open ID.", prompt=True)],
+    bot_id: Annotated[int, typer.Option(help="Feishu bot ID.", prompt=True)],
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    """Add a notification route for an agent."""
+    config = load_config(config_path)
+    url = f"{config.hub_url.rstrip('/')}/api/agents/{agent}/notifications"
+    try:
+        response = hub_request(
+            "POST",
+            url,
+            json={
+                "agent_short_id": agent,
+                "event_type": event,
+                "destination_type": destination_type,
+                "destination_id": destination_id,
+                "feishu_bot_id": bot_id,
+            },
+        )
+        typer.echo(f"Route added: {response.json()}")
+    except HubRequestError as exc:
+        typer.echo(f"error: {_format_hub_request_error(exc)}", err=True)
+        raise typer.Exit(1)
+
+
+@notification_app.command("route-list")
+def notification_route_list(
+    agent: Annotated[str, typer.Option(help="Agent short ID.")],
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    """List notification routes for an agent."""
+    config = load_config(config_path)
+    url = f"{config.hub_url.rstrip('/')}/api/agents/{agent}/notifications"
+    try:
+        response = hub_request("GET", url)
+        data = response.json()
+        routes = data.get("routes", [])
+        if not routes:
+            typer.echo(f"No notification routes for {agent}.")
+            return
+        for route in routes:
+            dest = "group" if route["destination_type"] == "group" else "private"
+            typer.echo(
+                f"  {route['id']}: {route['event_type']} -> {dest}:{route['destination_id']} "
+                f"(bot {route['feishu_bot_id']}) [{'on' if route['enabled'] else 'off'}]"
+            )
+    except HubRequestError as exc:
+        typer.echo(f"error: {_format_hub_request_error(exc)}", err=True)
+        raise typer.Exit(1)
+
+
+@notification_app.command("route-remove")
+def notification_route_remove(
+    agent: Annotated[str, typer.Option(help="Agent short ID.")],
+    route_id: Annotated[int, typer.Argument(help="Route ID.")],
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    """Remove a notification route."""
+    config = load_config(config_path)
+    url = f"{config.hub_url.rstrip('/')}/api/agents/{agent}/notifications/{route_id}"
+    try:
+        response = hub_request("DELETE", url)
+        typer.echo(f"Route removed: {response.json()}")
+    except HubRequestError as exc:
+        typer.echo(f"error: {_format_hub_request_error(exc)}", err=True)
+        raise typer.Exit(1)

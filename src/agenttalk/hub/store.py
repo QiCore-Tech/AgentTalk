@@ -216,6 +216,50 @@ class HubStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_permissions_agent ON agent_permissions(agent_short_id);
                 CREATE INDEX IF NOT EXISTS idx_permissions_user ON agent_permissions(user_id);
+
+                -- Feishu bots (user-managed bots)
+                CREATE TABLE IF NOT EXISTS feishu_bots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    app_id TEXT NOT NULL,
+                    app_secret TEXT NOT NULL,
+                    status TEXT DEFAULT 'active',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(user_id, app_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_feishu_bots_user ON feishu_bots(user_id);
+
+                -- Agent notification routes
+                CREATE TABLE IF NOT EXISTS agent_notification_routes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_short_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    destination_type TEXT NOT NULL,
+                    destination_id TEXT NOT NULL,
+                    feishu_bot_id INTEGER NOT NULL,
+                    enabled INTEGER DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(feishu_bot_id) REFERENCES feishu_bots(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_routes_agent ON agent_notification_routes(agent_short_id);
+                CREATE INDEX IF NOT EXISTS idx_routes_user ON agent_notification_routes(user_id);
+                CREATE INDEX IF NOT EXISTS idx_routes_event ON agent_notification_routes(event_type);
+
+                -- User Feishu bindings (for private chat)
+                CREATE TABLE IF NOT EXISTS user_feishu_bindings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    open_id TEXT NOT NULL,
+                    bot_id INTEGER NOT NULL,
+                    bound_at TEXT NOT NULL,
+                    UNIQUE(user_id, bot_id),
+                    UNIQUE(open_id, bot_id),
+                    FOREIGN KEY(bot_id) REFERENCES feishu_bots(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_bindings_user ON user_feishu_bindings(user_id);
+                CREATE INDEX IF NOT EXISTS idx_bindings_openid ON user_feishu_bindings(open_id);
                 """
             )
 
@@ -1163,3 +1207,196 @@ class HubStore:
             }
             for row in rows
         ]
+
+    # ==================== Feishu Bot Management ====================
+
+    def create_feishu_bot(self, user_id: str, name: str, app_id: str, app_secret: str) -> int:
+        """Register a new Feishu bot. Returns bot_id."""
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO feishu_bots (user_id, name, app_id, app_secret, status, created_at)
+                VALUES (?, ?, ?, ?, 'active', ?)
+                ON CONFLICT(user_id, app_id) DO UPDATE SET
+                    name = excluded.name,
+                    app_secret = excluded.app_secret,
+                    status = 'active'
+                """,
+                (user_id, name, app_id, app_secret, now),
+            )
+            return cursor.lastrowid or 0
+
+    def get_feishu_bot(self, bot_id: int) -> dict | None:
+        """Get a Feishu bot by ID."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM feishu_bots WHERE id = ?",
+                (bot_id,),
+            ).fetchone()
+        return self._feishu_bot_from_row(row) if row else None
+
+    def list_feishu_bots(self, user_id: str | None = None) -> list[dict]:
+        """List Feishu bots, optionally filtered by user."""
+        with self.connect() as conn:
+            if user_id:
+                rows = conn.execute(
+                    "SELECT * FROM feishu_bots WHERE user_id = ? ORDER BY created_at DESC",
+                    (user_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM feishu_bots ORDER BY created_at DESC").fetchall()
+        return [self._feishu_bot_from_row(row) for row in rows]
+
+    def delete_feishu_bot(self, bot_id: int) -> bool:
+        """Delete a Feishu bot."""
+        with self.connect() as conn:
+            cursor = conn.execute("DELETE FROM feishu_bots WHERE id = ?", (bot_id,))
+        return cursor.rowcount > 0
+
+    def _feishu_bot_from_row(self, row: sqlite3.Row) -> dict:
+        """Convert a database row to a Feishu bot dict."""
+        return {
+            "id": row["id"],
+            "user_id": str(row["user_id"]),
+            "name": str(row["name"]),
+            "app_id": str(row["app_id"]),
+            "app_secret": str(row["app_secret"]),
+            "status": str(row["status"]),
+            "created_at": str(row["created_at"]),
+        }
+
+    # ==================== Notification Routes ====================
+
+    def create_notification_route(
+        self,
+        agent_short_id: str,
+        user_id: str,
+        event_type: str,
+        destination_type: str,
+        destination_id: str,
+        feishu_bot_id: int,
+    ) -> int:
+        """Create a notification route. Returns route_id."""
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO agent_notification_routes
+                (agent_short_id, user_id, event_type, destination_type, destination_id, feishu_bot_id, enabled, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                """,
+                (agent_short_id, user_id, event_type, destination_type, destination_id, feishu_bot_id, now),
+            )
+            return cursor.lastrowid or 0
+
+    def get_notification_route(self, route_id: int) -> dict | None:
+        """Get a notification route by ID."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM agent_notification_routes WHERE id = ?",
+                (route_id,),
+            ).fetchone()
+        return self._route_from_row(row) if row else None
+
+    def list_notification_routes(
+        self,
+        agent_short_id: str | None = None,
+        user_id: str | None = None,
+        event_type: str | None = None,
+    ) -> list[dict]:
+        """List notification routes with optional filters."""
+        with self.connect() as conn:
+            query = "SELECT * FROM agent_notification_routes WHERE enabled = 1"
+            params: list[Any] = []
+
+            if agent_short_id:
+                query += " AND agent_short_id = ?"
+                params.append(agent_short_id)
+            if user_id:
+                query += " AND user_id = ?"
+                params.append(user_id)
+            if event_type:
+                query += " AND event_type = ?"
+                params.append(event_type)
+
+            query += " ORDER BY created_at DESC"
+            rows = conn.execute(query, params).fetchall()
+        return [self._route_from_row(row) for row in rows]
+
+    def update_notification_route(self, route_id: int, enabled: bool | None = None) -> bool:
+        """Update a notification route."""
+        with self.connect() as conn:
+            if enabled is not None:
+                cursor = conn.execute(
+                    "UPDATE agent_notification_routes SET enabled = ? WHERE id = ?",
+                    (1 if enabled else 0, route_id),
+                )
+                return cursor.rowcount > 0
+        return False
+
+    def delete_notification_route(self, route_id: int) -> bool:
+        """Delete a notification route."""
+        with self.connect() as conn:
+            cursor = conn.execute("DELETE FROM agent_notification_routes WHERE id = ?", (route_id,))
+        return cursor.rowcount > 0
+
+    def _route_from_row(self, row: sqlite3.Row) -> dict:
+        """Convert a database row to a route dict."""
+        return {
+            "id": row["id"],
+            "agent_short_id": str(row["agent_short_id"]),
+            "user_id": str(row["user_id"]),
+            "event_type": str(row["event_type"]),
+            "destination_type": str(row["destination_type"]),
+            "destination_id": str(row["destination_id"]),
+            "feishu_bot_id": row["feishu_bot_id"],
+            "enabled": bool(row["enabled"]),
+            "created_at": str(row["created_at"]),
+        }
+
+    # ==================== User Feishu Bindings ====================
+
+    def bind_user_feishu(self, user_id: str, open_id: str, bot_id: int) -> bool:
+        """Bind a user's Feishu open_id to their Hub account."""
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO user_feishu_bindings (user_id, open_id, bot_id, bound_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(user_id, bot_id) DO UPDATE SET
+                        open_id = excluded.open_id,
+                        bound_at = excluded.bound_at
+                    """,
+                    (user_id, open_id, bot_id, now),
+                )
+                return True
+            except sqlite3.Error:
+                return False
+
+    def find_user_by_open_id(self, open_id: str, bot_id: int) -> str | None:
+        """Find Hub user_id by Feishu open_id and bot_id."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT user_id FROM user_feishu_bindings WHERE open_id = ? AND bot_id = ?",
+                (open_id, bot_id),
+            ).fetchone()
+        return str(row["user_id"]) if row else None
+
+    def find_binding_by_user(self, user_id: str, bot_id: int) -> dict | None:
+        """Find binding by user_id and bot_id."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM user_feishu_bindings WHERE user_id = ? AND bot_id = ?",
+                (user_id, bot_id),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "user_id": str(row["user_id"]),
+            "open_id": str(row["open_id"]),
+            "bot_id": row["bot_id"],
+            "bound_at": str(row["bound_at"]),
+        }

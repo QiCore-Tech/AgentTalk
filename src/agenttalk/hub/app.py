@@ -20,6 +20,10 @@ from agenttalk.hub.models import (
     AgentStatus,
     AgentUpsertRequest,
     ErrorResponse,
+    FeishuBindRequest,
+    FeishuBotCreateRequest,
+    FeishuBotListResponse,
+    FeishuBotResponse,
     HealthResponse,
     MachineCreateRequest,
     MachineListResponse,
@@ -27,6 +31,9 @@ from agenttalk.hub.models import (
     MessageCreateRequest,
     MessageResponseUpdateRequest,
     MessageStatusUpdateRequest,
+    NotificationRouteCreateRequest,
+    NotificationRouteListResponse,
+    NotificationRouteResponse,
     PendingMessageResponse,
     PermissionGrantRequest,
     RelayHeartbeatRequest,
@@ -905,9 +912,125 @@ def create_app(settings: HubSettings) -> FastAPI:
         permissions = hub_store.list_permissions(short_id)
         return {"permissions": permissions}
 
+    # ==================== Feishu Bot APIs ====================
+
+    @app.post("/api/feishu/bots")
+    def create_feishu_bot(
+        request: FeishuBotCreateRequest,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Register a new Feishu bot."""
+        bot_id = hub_store.create_feishu_bot(
+            user_id=auth.user_id,
+            name=request.name,
+            app_id=request.app_id,
+            app_secret=request.app_secret,
+        )
+        return {"id": bot_id, "status": "active"}
+
+    @app.get("/api/feishu/bots")
+    def list_feishu_bots(
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> FeishuBotListResponse:
+        """List user's Feishu bots."""
+        bots = hub_store.list_feishu_bots(user_id=auth.user_id)
+        return FeishuBotListResponse(
+            bots=[FeishuBotResponse(**{**b, "app_secret": "***"}) for b in bots]
+        )
+
+    @app.delete("/api/feishu/bots/{bot_id}")
+    def delete_feishu_bot(
+        bot_id: int,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Delete a Feishu bot."""
+        if hub_store.delete_feishu_bot(bot_id):
+            return {"ok": True}
+        raise api_error(404, "bot_not_found", "Bot not found")
+
+    # ==================== Notification Route APIs ====================
+
+    @app.post("/api/agents/{short_id}/notifications")
+    def create_notification_route(
+        short_id: str,
+        request: NotificationRouteCreateRequest,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Create a notification route for an agent."""
+        route_id = hub_store.create_notification_route(
+            agent_short_id=short_id,
+            user_id=auth.user_id,
+            event_type=request.event_type,
+            destination_type=request.destination_type,
+            destination_id=request.destination_id,
+            feishu_bot_id=request.feishu_bot_id,
+        )
+        return {"route_id": route_id, "enabled": True}
+
+    @app.get("/api/agents/{short_id}/notifications")
+    def list_notification_routes(
+        short_id: str,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> NotificationRouteListResponse:
+        """List notification routes for an agent."""
+        routes = hub_store.list_notification_routes(
+            agent_short_id=short_id,
+            user_id=auth.user_id,
+        )
+        return NotificationRouteListResponse(
+            routes=[NotificationRouteResponse(**r) for r in routes]
+        )
+
+    @app.patch("/api/agents/{short_id}/notifications/{route_id}")
+    def update_notification_route(
+        short_id: str,
+        route_id: int,
+        body: dict,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Update a notification route."""
+        enabled = body.get("enabled")
+        if enabled is not None:
+            if hub_store.update_notification_route(route_id, enabled=enabled):
+                return {"ok": True}
+        raise api_error(404, "route_not_found", "Route not found")
+
+    @app.delete("/api/agents/{short_id}/notifications/{route_id}")
+    def delete_notification_route(
+        short_id: str,
+        route_id: int,
+        hub_store: HubStore = Depends(get_store),
+        auth: AuthContext = Depends(require_auth),
+    ) -> dict:
+        """Delete a notification route."""
+        if hub_store.delete_notification_route(route_id):
+            return {"ok": True}
+        raise api_error(404, "route_not_found", "Route not found")
+
+    # ==================== Feishu User Binding API ====================
+
+    @app.post("/api/auth/feishu-bind")
+    def feishu_bind(
+        request: FeishuBindRequest,
+        hub_store: HubStore = Depends(get_store),
+    ) -> dict:
+        """Bind Feishu open_id to Hub user."""
+        # TODO: verify token
+        if hub_store.bind_user_feishu(
+            user_id=request.token,  # Simplified: use token as user_id for now
+            open_id=request.open_id,
+            bot_id=request.bot_id,
+        ):
+            return {"user_id": request.token, "status": "bound"}
+        raise api_error(400, "bind_failed", "Failed to bind Feishu account")
+
     if settings.web_dist_path and settings.web_dist_path.exists():
         app.mount("/", StaticFiles(directory=settings.web_dist_path, html=True), name="web")
-
-    return app
 
     return app
