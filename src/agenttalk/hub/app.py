@@ -768,6 +768,16 @@ def create_app(settings: HubSettings) -> FastAPI:
 
     # ==================== Auth APIs ====================
 
+    @app.get("/api/auth/config")
+    def get_auth_config() -> dict:
+        """Get current authentication configuration."""
+        return {
+            "auth_mode": settings.auth_mode,
+            "local_enabled": settings.auth_mode in ("local", "both"),
+            "casdoor_enabled": settings.auth_mode in ("casdoor", "both") and bool(settings.casdoor_endpoint),
+            "token_enabled": settings.auth_mode in ("token", "both"),
+        }
+
     @app.get("/api/auth/me")
     def get_current_user(
         auth: AuthContext = Depends(require_auth),

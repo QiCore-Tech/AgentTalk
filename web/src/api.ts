@@ -261,3 +261,14 @@ export async function loginLocalUser(
 export async function getCurrentUser(): Promise<UserInfo> {
   return request('/api/auth/me')
 }
+
+export interface AuthConfig {
+  auth_mode: string
+  local_enabled: boolean
+  casdoor_enabled: boolean
+  token_enabled: boolean
+}
+
+export async function getAuthConfig(): Promise<AuthConfig> {
+  return request('/api/auth/config')
+}
