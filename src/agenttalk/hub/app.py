@@ -809,6 +809,7 @@ def create_app(settings: HubSettings) -> FastAPI:
 
     @app.get("/api/auth/casdoor/callback")
     def casdoor_callback(
+        request: Request,
         code: str,
         state: str = "",
     ):
@@ -816,8 +817,11 @@ def create_app(settings: HubSettings) -> FastAPI:
         if settings.auth_mode not in ("casdoor", "both"):
             raise api_error(400, "auth_mode_not_supported", "Casdoor auth is not enabled")
         try:
+            # Build redirect_uri from current request (must match authorize request)
+            redirect_uri = str(request.url).split('?')[0]
+            
             # Exchange code for token
-            token_data = auth_manager.exchange_casdoor_code(code)
+            token_data = auth_manager.exchange_casdoor_code(code, redirect_uri)
             access_token = token_data.get("access_token")
             if not access_token:
                 return _oauth_error_html("No access token in response")
@@ -833,6 +837,8 @@ def create_app(settings: HubSettings) -> FastAPI:
             
             return _oauth_success_html(jwt_token, user_id, username, display_name)
         except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("OAuth callback failed")
             return _oauth_error_html(str(exc))
 
     def _oauth_success_html(token: str, user_id: str, username: str, display_name: str):

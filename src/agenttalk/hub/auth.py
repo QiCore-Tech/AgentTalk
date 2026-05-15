@@ -165,27 +165,40 @@ class AuthManager:
         query = "&".join(f"{k}={v}" for k, v in params.items())
         return f"{self.casdoor_endpoint}/login/oauth/authorize?{query}"
 
-    def exchange_casdoor_code(self, code: str) -> dict:
+    def exchange_casdoor_code(self, code: str, redirect_uri: str = "") -> dict:
         """Exchange Casdoor authorization code for access token."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         if not self.casdoor_endpoint:
             raise RuntimeError("Casdoor endpoint not configured")
 
         url = f"{self.casdoor_endpoint}/api/login/oauth/access_token"
+        data = {
+            "grant_type": "authorization_code",
+            "client_id": self.casdoor_client_id,
+            "client_secret": self.casdoor_client_secret,
+            "code": code,
+        }
+        if redirect_uri:
+            data["redirect_uri"] = redirect_uri
+            
+        logger.info(f"Exchanging code with redirect_uri: {redirect_uri}")
+        
         response = httpx.post(
             url,
-            json={
-                "grant_type": "authorization_code",
-                "client_id": self.casdoor_client_id,
-                "client_secret": self.casdoor_client_secret,
-                "code": code,
-            },
+            data=data,
             timeout=10,
         )
         response.raise_for_status()
-        data = response.json()
-        if data.get("status") != "ok":
-            raise HTTPException(status_code=400, detail="Casdoor authentication failed")
-        return data.get("data", {})
+        result = response.json()
+        
+        logger.info(f"Casdoor token response: {result}")
+        
+        if result.get("status") != "ok":
+            error_msg = result.get("msg", "Casdoor authentication failed")
+            raise HTTPException(status_code=400, detail=f"Casdoor error: {error_msg}")
+        return result.get("data", {})
 
     def get_casdoor_user_info(self, access_token: str) -> dict:
         """Get user info from Casdoor using access token."""
