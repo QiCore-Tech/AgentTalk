@@ -226,8 +226,11 @@ export async function submitTask(rawRequest: string, targetMachineId: number): P
 
 // ==================== Auth APIs ====================
 
-export async function getLoginUrl(): Promise<{ login_url: string }> {
-  return request('/api/auth/casdoor/login')
+export async function getLoginUrl(redirectUri?: string): Promise<{ login_url: string }> {
+  const url = redirectUri
+    ? `/api/auth/casdoor/login?redirect_uri=${encodeURIComponent(redirectUri)}`
+    : '/api/auth/casdoor/login'
+  return request(url)
 }
 
 export async function exchangeCasdoorCode(code: string): Promise<{ token: string; user_id: string; username: string; display_name: string }> {
