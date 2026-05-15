@@ -1054,8 +1054,8 @@ class HubStore:
         """Update task status and optional fields."""
         now = format_time(utc_now())
         with self.connect() as conn:
-            updates = ["status = ?", "updated_at = ?"]
-            params: list[Any] = [status, now]
+            updates = ["status = ?"]
+            params: list[Any] = [status]
 
             if error:
                 updates.append("error = ?")
