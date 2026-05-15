@@ -27,7 +27,6 @@ import {
   listTasks,
   submitTask,
   getLoginUrl,
-  exchangeCasdoorCode,
   getCurrentUser,
   registerLocalUser,
   loginLocalUser,
@@ -67,34 +66,6 @@ function App() {
   }, [theme])
 
   const toggleTheme = () => setTheme(theme === 'light' ? 'dark' : 'light')
-
-  // Handle OAuth callback (check URL for code)
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const code = params.get('code')
-    if (code && authState === 'logged_out') {
-      setAuthState('checking')
-      exchangeCasdoorCode(code)
-        .then((data) => {
-          setToken(data.token)
-          const userInfo: UserInfo = {
-            user_id: data.user_id,
-            username: data.username,
-            display_name: data.display_name,
-            email: '',
-          }
-          setUser(userInfo)
-          setUserInfo(userInfo)
-          setAuthState('logged_in')
-          // Clean URL
-          window.history.replaceState({}, '', window.location.pathname)
-        })
-        .catch((err) => {
-          setAuthError(err instanceof Error ? err.message : String(err))
-          setAuthState('logged_out')
-        })
-    }
-  }, [authState])
 
   // Fetch current user info when logged in
   useEffect(() => {

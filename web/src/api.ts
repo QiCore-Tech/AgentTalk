@@ -233,13 +233,6 @@ export async function getLoginUrl(redirectUri?: string): Promise<{ login_url: st
   return request(url)
 }
 
-export async function exchangeCasdoorCode(code: string): Promise<{ token: string; user_id: string; username: string; display_name: string }> {
-  return request('/api/auth/casdoor/callback', {
-    method: 'POST',
-    body: JSON.stringify({ code }),
-  })
-}
-
 export async function registerLocalUser(
   username: string,
   password: string,

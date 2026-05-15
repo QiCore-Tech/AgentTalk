@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from agenttalk.hub.errors import api_error
 from agenttalk.hub.models import (
@@ -807,12 +807,12 @@ def create_app(settings: HubSettings) -> FastAPI:
         except Exception as exc:
             raise api_error(500, "casdoor_error", str(exc))
 
-    @app.post("/api/auth/casdoor/callback")
+    @app.get("/api/auth/casdoor/callback")
     def casdoor_callback(
         code: str,
         state: str = "",
-    ) -> dict:
-        """Handle Casdoor OAuth callback."""
+    ):
+        """Handle Casdoor OAuth callback (GET redirect)."""
         if settings.auth_mode not in ("casdoor", "both"):
             raise api_error(400, "auth_mode_not_supported", "Casdoor auth is not enabled")
         try:
@@ -820,7 +820,7 @@ def create_app(settings: HubSettings) -> FastAPI:
             token_data = auth_manager.exchange_casdoor_code(code)
             access_token = token_data.get("access_token")
             if not access_token:
-                raise api_error(400, "casdoor_error", "No access token in response")
+                return _oauth_error_html("No access token in response")
             
             # Get user info
             user_info = auth_manager.get_casdoor_user_info(access_token)
@@ -831,20 +831,46 @@ def create_app(settings: HubSettings) -> FastAPI:
             # Create local JWT
             jwt_token = auth_manager.create_local_jwt(user_id, username, display_name)
             
-            return {
-                "token": jwt_token,
-                "user": {
-                    "user_id": user_id,
-                    "username": username,
-                    "display_name": display_name,
-                    "email": user_info.get("email", ""),
-                    "avatar": user_info.get("avatar", ""),
-                },
-            }
-        except HTTPException:
-            raise
+            return _oauth_success_html(jwt_token, user_id, username, display_name)
         except Exception as exc:
-            raise api_error(500, "casdoor_error", str(exc))
+            return _oauth_error_html(str(exc))
+
+    def _oauth_success_html(token: str, user_id: str, username: str, display_name: str):
+        """Return HTML that stores token and redirects to app."""
+        return HTMLResponse(content=f"""
+<!DOCTYPE html>
+<html>
+<head><title>Login Success</title></head>
+<body>
+<script>
+localStorage.setItem('agenttalk_jwt_token', '{token}');
+localStorage.setItem('agenttalk_user', JSON.stringify({{
+    user_id: '{user_id}',
+    username: '{username}',
+    display_name: '{display_name}',
+    email: ''
+}}));
+window.location.href = '/';
+</script>
+<p>Login successful. Redirecting...</p>
+</body>
+</html>
+""")
+
+    def _oauth_error_html(message: str):
+        """Return HTML that shows error."""
+        return HTMLResponse(content=f"""
+<!DOCTYPE html>
+<html>
+<head><title>Login Failed</title></head>
+<body>
+<script>
+window.location.href = '/?error=' + encodeURIComponent('{message}');
+</script>
+<p>Login failed: {message}. Redirecting...</p>
+</body>
+</html>
+""")
 
     @app.post("/api/auth/register")
     def register_local_user(
