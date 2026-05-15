@@ -192,11 +192,12 @@ def create_app(settings: HubSettings) -> FastAPI:
             raise api_error(401, "unauthorized", "Missing or invalid bearer token")
         return auth
 
-    def require_token(authorization: str | None = Header(default=None)) -> None:
-        """Legacy: require hub admin token only."""
-        expected = f"Bearer {settings.token}"
-        if authorization != expected:
+    def require_token(authorization: str | None = Header(default=None)) -> AuthContext:
+        """Require valid authentication (admin token, local JWT, or Casdoor)."""
+        auth = auth_manager.verify_bearer(authorization)
+        if auth is None:
             raise api_error(401, "unauthorized", "Missing or invalid bearer token")
+        return auth
 
     def get_store() -> HubStore:
         return store
@@ -718,7 +719,7 @@ def create_app(settings: HubSettings) -> FastAPI:
         return {"written": True, "short_id": short_id}
 
     @app.get("/api/config/llm")
-    def get_llm_config(_: None = Depends(require_token)) -> dict:
+    def get_llm_config(_: AuthContext = Depends(require_token)) -> dict:
         store = get_store()
         base_url = store.get_config("llm.base_url") or ""
         api_key = store.get_config("llm.api_key") or ""
@@ -727,7 +728,7 @@ def create_app(settings: HubSettings) -> FastAPI:
         return {"base_url": base_url, "api_key": api_key, "model": model, "enabled": enabled}
 
     @app.post("/api/config/llm")
-    def set_llm_config(body: dict, _: None = Depends(require_token)) -> dict:
+    def set_llm_config(body: dict, _: AuthContext = Depends(require_token)) -> dict:
         store = get_store()
         store.set_config("llm.base_url", body.get("base_url", ""))
         store.set_config("llm.api_key", body.get("api_key", ""))
@@ -739,7 +740,7 @@ def create_app(settings: HubSettings) -> FastAPI:
     def get_agent_auto_resume(
         short_id: str,
         hub_store: HubStore = Depends(get_store),
-        _: None = Depends(require_token),
+        _: AuthContext = Depends(require_token),
     ) -> dict:
         agent = hub_store.get_agent(short_id)
         if agent is None:
@@ -752,7 +753,7 @@ def create_app(settings: HubSettings) -> FastAPI:
         short_id: str,
         body: dict,
         hub_store: HubStore = Depends(get_store),
-        _: None = Depends(require_token),
+        _: AuthContext = Depends(require_token),
     ) -> dict:
         agent = hub_store.get_agent(short_id)
         if agent is None:
