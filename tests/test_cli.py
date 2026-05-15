@@ -208,6 +208,119 @@ def test_send_surfaces_evidence_trail(monkeypatch) -> None:
     assert "agenttalk context alice-codex-api" in result.output
 
 
+def test_alert_posts_agent_warning_to_hub(monkeypatch) -> None:
+    runner = CliRunner()
+    calls: list[dict] = []
+
+    class FakeAlertResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict:
+            return {
+                "alert": {
+                    "short_id": "alice-codex-api",
+                    "alert_type": "warning",
+                    "message": "Need human review.",
+                    "created_at": "2026-05-15T00:00:00Z",
+                    "acknowledged": False,
+                },
+                "feishu_status": "sent",
+                "feishu_error": "",
+            }
+
+    def fake_hub_request(method, url, **kwargs):
+        calls.append({"method": method, "url": url, "json": kwargs["json"]})
+        return FakeAlertResponse()
+
+    monkeypatch.setattr(cli, "hub_request", fake_hub_request)
+
+    result = runner.invoke(
+        app,
+        [
+            "alert",
+            "--from",
+            "alice-codex-api",
+            "--type",
+            "warning",
+            "--message",
+            "Need human review.",
+            "--hub-url",
+            "http://hub.local:8787",
+            "--token",
+            "test-token",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        {
+            "method": "POST",
+            "url": "http://hub.local:8787/api/alerts",
+            "json": {
+                "source": "alice-codex-api",
+                "alert_type": "warning",
+                "message": "Need human review.",
+            },
+        }
+    ]
+    assert "alert created" in result.output
+    assert "feishu: sent" in result.output
+
+
+def test_alert_reads_message_from_stdin(monkeypatch) -> None:
+    runner = CliRunner()
+    calls: list[dict] = []
+
+    class FakeAlertResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict:
+            return {
+                "alert": {
+                    "short_id": "alice-codex-api",
+                    "alert_type": "warning",
+                    "message": "line 1\nline 2",
+                    "created_at": "2026-05-15T00:00:00Z",
+                    "acknowledged": False,
+                },
+                "feishu_status": "sent",
+                "feishu_error": "",
+            }
+
+    def fake_hub_request(method, url, **kwargs):
+        calls.append({"method": method, "url": url, "json": kwargs["json"]})
+        return FakeAlertResponse()
+
+    monkeypatch.setattr(cli, "hub_request", fake_hub_request)
+
+    result = runner.invoke(
+        app,
+        [
+            "alert",
+            "--from",
+            "alice-codex-api",
+            "--type",
+            "warning",
+            "--message",
+            "-",
+            "--hub-url",
+            "http://hub.local:8787",
+            "--token",
+            "test-token",
+        ],
+        input="line 1\nline 2\n",
+    )
+
+    assert result.exit_code == 0
+    assert calls[0]["json"] == {
+        "source": "alice-codex-api",
+        "alert_type": "warning",
+        "message": "line 1\nline 2",
+    }
+
+
 def test_register_warns_when_worker_kind_uses_paste_only(tmp_path) -> None:
     """Issue 5: worker-class kinds (claude/codex/gemini) MUST be auto_submit;
     register must surface a clear warning when paste_only is used."""

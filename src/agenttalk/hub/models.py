@@ -99,6 +99,18 @@ class AgentAlert(BaseModel):
     acknowledged: bool = False
 
 
+class AgentAlertCreateRequest(BaseModel):
+    source: str = Field(min_length=1, max_length=120)
+    alert_type: str = Field(default="warning", min_length=1, max_length=80)
+    message: str = Field(min_length=1, max_length=4000)
+
+
+class AgentAlertCreateResponse(BaseModel):
+    alert: AgentAlert
+    feishu_status: str = "skipped"
+    feishu_error: str = ""
+
+
 class AgentResponse(BaseModel):
     short_id: str
     machine_id: str

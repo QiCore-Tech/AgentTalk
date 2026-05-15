@@ -120,3 +120,25 @@ def test_relay_poll_marks_message_delivered_then_injected(tmp_path: Path) -> Non
 
     assert updated.status_code == 200
     assert updated.json()["status"] == "injected"
+
+
+def test_create_agent_alert_records_alert_when_feishu_disabled(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    register_target(client)
+
+    response = client.post(
+        "/api/alerts",
+        headers=auth(),
+        json={"source": "alice-codex-api", "alert_type": "warning", "message": "Need human review."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["feishu_status"] == "skipped"
+    assert payload["alert"]["short_id"] == "alice-codex-api"
+    assert payload["alert"]["alert_type"] == "warning"
+    assert payload["alert"]["message"] == "Need human review."
+
+    listed = client.get("/api/agents/alice-codex-api/alerts", headers=auth())
+    assert listed.status_code == 200
+    assert listed.json()["alerts"][0]["message"] == "Need human review."

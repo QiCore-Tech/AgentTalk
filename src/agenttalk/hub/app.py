@@ -15,6 +15,8 @@ from fastapi.responses import JSONResponse
 from agenttalk.hub.errors import api_error
 from agenttalk.hub.models import (
     AgentContextUpdateRequest,
+    AgentAlertCreateRequest,
+    AgentAlertCreateResponse,
     AgentHealthReport,
     AgentListResponse,
     AgentStatus,
@@ -123,17 +125,21 @@ def create_app(settings: HubSettings) -> FastAPI:
     def get_store() -> HubStore:
         return store
 
-    def maybe_alert_feishu(short_id: str, alert_type: str, message: str, owner: str = "") -> None:
+    def maybe_alert_feishu(short_id: str, alert_type: str, message: str, owner: str = "") -> tuple[str, str]:
         if not settings.feishu_enable or feishu_messenger is None or feishu_service is None:
-            return
+            return "skipped", ""
+        if not settings.feishu_alert_chat_id:
+            return "skipped", "FEISHU_ALERT_CHAT_ID is not configured"
         try:
             feishu_service.send_alert(
                 feishu_messenger, short_id, alert_type, message,
                 owner=owner, chat_id=settings.feishu_alert_chat_id,
             )
+            return "sent", ""
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning(f"Feishu alert failed: {exc}")
+            return "failed", str(exc)
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -413,6 +419,31 @@ def create_app(settings: HubSettings) -> FastAPI:
                     pass  # Fail silently if auto-resume fails
         
         return updated
+
+    @app.post(
+        "/api/alerts",
+        response_model=AgentAlertCreateResponse,
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}},
+    )
+    def create_agent_alert(
+        request: AgentAlertCreateRequest,
+        hub_store: HubStore = Depends(get_store),
+    ) -> AgentAlertCreateResponse:
+        agent = hub_store.get_agent(request.source)
+        owner = agent.owner if agent else ""
+        alert = hub_store.create_alert(request.source, request.alert_type, request.message)
+        feishu_status, feishu_error = maybe_alert_feishu(
+            request.source,
+            request.alert_type,
+            request.message,
+            owner,
+        )
+        return AgentAlertCreateResponse(
+            alert=alert,
+            feishu_status=feishu_status,
+            feishu_error=feishu_error,
+        )
 
     @app.get(
         "/api/agents/{short_id}/alerts",

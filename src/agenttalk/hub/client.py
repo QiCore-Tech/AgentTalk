@@ -154,6 +154,18 @@ class HubClient:
         )
         response.raise_for_status()
 
+    def create_alert(self, *, source: str, alert_type: str, message: str) -> dict:
+        response = request(
+            "POST",
+            f"{self.hub_url}/api/alerts",
+            headers=self.headers,
+            json={"source": source, "alert_type": alert_type, "message": message},
+            timeout=10,
+            retry_statuses=SAFE_POST_RETRY_STATUSES,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def get_agent_context(self, short_id: str) -> dict:
         response = request(
             "GET",

@@ -79,6 +79,30 @@ Do not treat Hub `completed` as sufficient proof unless the actual context or
 response contains the peer's answer after the injected task text. Some terminals
 echo the injected done marker.
 
+## Send a Feishu Alert
+
+When an agent needs human attention without routing work to another agent, send
+an alert through the Hub. The Hub records the alert and, when Feishu alerts are
+configured, posts an alert card to the configured Feishu chat:
+
+```bash
+agenttalk alert --from alice-codex-api --type warning --message "Need human review: deploy gate is blocked."
+```
+
+For multi-line alerts, let the agent write the content itself and pass it on
+stdin:
+
+```bash
+agenttalk alert --from alice-codex-api --type warning --message - <<'EOF'
+Need human review: deploy gate is blocked.
+Evidence: `uv run pytest` fails in tests/test_api.py::test_contract.
+Decision needed: approve retry after API owner reviews the failure.
+EOF
+```
+
+Use concise messages with enough evidence for a human to act: the blocked task,
+the file or command involved, and the requested decision. Do not include secrets.
+
 Feishu equivalents:
 
 ```text
@@ -102,6 +126,15 @@ Supported first-version commands:
 /send <agent-id> <message>
 /status <message-id>
 /response <message-id>
+```
+
+Agent-originated Feishu alerts use the CLI:
+
+```bash
+agenttalk alert --from <agent-id> --type warning --message "<brief alert>"
+agenttalk alert --from <agent-id> --type warning --message - <<'EOF'
+<multi-line alert body written by the agent>
+EOF
 ```
 
 When answering a user about Feishu setup or operation, direct them to:

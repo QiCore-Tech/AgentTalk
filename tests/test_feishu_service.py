@@ -111,3 +111,32 @@ def test_guide_reliability_command_returns_local_relay_guidance(tmp_path: Path) 
     assert "AgentTalk 可靠投递说明" in str(reply.content)
     assert "agenttalk doctor" in str(reply.content)
     assert "agenttalk dlq list" in str(reply.content)
+
+
+def test_send_alert_uses_alert_card_and_chat_id(tmp_path: Path) -> None:
+    service = FeishuAgentTalkService(make_store(tmp_path), web_base_url="https://agenttalk.company.lan")
+
+    class FakeMessenger:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def send_to_chat(self, chat_id: str, reply) -> None:
+            self.calls.append((chat_id, reply))
+
+    messenger = FakeMessenger()
+
+    service.send_alert(
+        messenger,
+        "alice-codex-api",
+        "warning",
+        "Need human review.",
+        owner="alice",
+        chat_id="oc_123",
+    )
+
+    assert len(messenger.calls) == 1
+    chat_id, reply = messenger.calls[0]
+    assert chat_id == "oc_123"
+    assert reply.msg_type == "interactive"
+    assert "alice-codex-api" in str(reply.content)
+    assert "Need human review." in str(reply.content)

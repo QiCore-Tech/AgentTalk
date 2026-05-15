@@ -512,6 +512,46 @@ def send_message(
         )
 
 
+@app.command("alert")
+def create_alert(
+    source: Annotated[str, typer.Option("--from", help="Source agent short ID or sender label.")],
+    message: Annotated[str | None, typer.Option(help="Alert message body. Use '-' to read from stdin.")] = None,
+    alert_type: Annotated[str, typer.Option("--type", help="Alert type, for example warning/error/crashed/info.")] = "warning",
+    hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
+    token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
+    config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
+) -> None:
+    config = load_config(config_path)
+    resolved_token = token or config.token or os.environ.get("AGENTTALK_TOKEN")
+    if not resolved_token:
+        raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
+    resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
+    alert_message = sys.stdin.read() if message == "-" else message
+    if alert_message is None:
+        alert_message = typer.prompt("Alert message")
+    alert_message = alert_message.strip()
+    if not alert_message:
+        raise typer.BadParameter("Alert message cannot be empty")
+    response = _hub_request_or_exit(
+        "POST",
+        f"{resolved_hub_url.rstrip('/')}/api/alerts",
+        headers=auth_headers(resolved_token),
+        json={"source": source, "alert_type": alert_type, "message": alert_message},
+        timeout=10,
+    )
+    if response.status_code >= 400:
+        typer.echo(response.text, err=True)
+        raise typer.Exit(1)
+    payload = response.json()
+    alert = payload["alert"]
+    typer.echo("alert created")
+    typer.echo(f"from: {alert['short_id']}")
+    typer.echo(f"type: {alert['alert_type']}")
+    typer.echo(f"feishu: {payload.get('feishu_status', 'skipped')}")
+    if payload.get("feishu_error"):
+        typer.echo(f"feishu_error: {payload['feishu_error']}", err=True)
+
+
 @app.command("status")
 def message_status(
     message_id: str,
