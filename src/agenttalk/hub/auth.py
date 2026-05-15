@@ -190,14 +190,24 @@ class AuthManager:
             data=data,
             timeout=10,
         )
-        response.raise_for_status()
-        result = response.json()
         
-        logger.info(f"Casdoor token response: {result}")
+        try:
+            result = response.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid response from Casdoor: {response.text}")
         
+        logger.info(f"Casdoor token response status={response.status_code}: {result}")
+        
+        # Check for standard OAuth error
+        if "error" in result:
+            error_desc = result.get("error_description", result["error"])
+            raise HTTPException(status_code=400, detail=f"OAuth error: {error_desc}")
+        
+        # Check for Casdoor custom format
         if result.get("status") != "ok":
             error_msg = result.get("msg", "Casdoor authentication failed")
             raise HTTPException(status_code=400, detail=f"Casdoor error: {error_msg}")
+            
         return result.get("data", {})
 
     def get_casdoor_user_info(self, access_token: str) -> dict:
