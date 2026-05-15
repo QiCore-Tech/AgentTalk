@@ -83,14 +83,17 @@ class FeishuBotManager:
         if bot_id in self._bots:
             return
 
-        # Create a handler for this bot
+        messenger = LarkMessenger(app_id, app_secret)
+        # Create a handler for this bot with bot_id and store for private chat context
         if self.feishu_service:
-            handler = FeishuEventHandler(self.feishu_service, LarkMessenger(app_id, app_secret))
-        else:
-            # Create a dummy handler if no service available
             handler = FeishuEventHandler(
-                FeishuAgentTalkService(self.store),
-                LarkMessenger(app_id, app_secret),
+                self.feishu_service, messenger,
+                bot_id=bot_id, store=self.store,
+            )
+        else:
+            handler = FeishuEventHandler(
+                FeishuAgentTalkService(self.store), messenger,
+                bot_id=bot_id, store=self.store,
             )
 
         instance = FeishuBotInstance(bot_id, app_id, app_secret, handler)

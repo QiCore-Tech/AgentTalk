@@ -168,6 +168,16 @@ def create_app(settings: HubSettings) -> FastAPI:
         return store
 
     def maybe_alert_feishu(short_id: str, alert_type: str, message: str, owner: str = "") -> None:
+        """Send alert via user-configured bot routes, fallback to global bot."""
+        # Try user-configured routes first
+        try:
+            results = bot_manager.send_notification(short_id, "alert", f"[{alert_type}] {message}")
+            if results:
+                return  # Sent via user routes
+        except Exception:
+            pass
+
+        # Fallback to global Feishu bot
         if not settings.feishu_enable or feishu_messenger is None or feishu_service is None:
             return
         try:

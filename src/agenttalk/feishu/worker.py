@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from agenttalk.feishu.commands import parse_command
-from agenttalk.feishu.render import FeishuReply
+from agenttalk.feishu.render import FeishuReply, text_reply
 from agenttalk.feishu.service import FeishuAgentTalkService, FeishuOperator
 
 logger = logging.getLogger(__name__)
@@ -27,11 +27,25 @@ class FeishuEvent:
 
 
 class FeishuEventHandler:
-    def __init__(self, service: FeishuAgentTalkService, messenger: FeishuMessenger) -> None:
+    def __init__(self, service: FeishuAgentTalkService, messenger: FeishuMessenger, *, bot_id: int | None = None, store=None) -> None:
         self.service = service
         self.messenger = messenger
+        self.bot_id = bot_id
+        self.store = store
 
     def handle_event(self, event: FeishuEvent) -> FeishuReply:
+        # Private chat: inject user context if bound
+        if event.receive_id_type == "open_id" and self.store and self.bot_id:
+            user_id = self.store.find_user_by_open_id(event.open_id, self.bot_id)
+            if user_id:
+                # User is bound; optionally filter commands to their agents
+                pass  # Commands are already user-scoped via service/store
+            else:
+                # Not bound; prompt user to bind
+                reply = text_reply("请先绑定账号。发送 /bind <你的Hub Token>")
+                self.messenger.send_reply(event.receive_id, reply, receive_id_type=event.receive_id_type)
+                return reply
+
         reply = self.service.handle(parse_command(event.text), FeishuOperator(open_id=event.open_id, chat_id=event.chat_id))
         self.messenger.send_reply(event.receive_id, reply, receive_id_type=event.receive_id_type)
         return reply
