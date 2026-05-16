@@ -33,12 +33,16 @@ INLINE_INJECTION_MAX_CHARS = 1400
 INLINE_INJECTION_MAX_LINES = 8
 DELIVERY_RECOVERY_GRACE_SECONDS = 5.0
 DELIVERY_RECOVERY_MAX_ATTEMPTS = 3
+DEFAULT_MAX_MESSAGES_PER_TICK = 10
+DEFAULT_MAX_WATCHES_PER_TICK = 25
+DEFAULT_WATCH_TIMEOUT_SECONDS = 12 * 60 * 60
 
 DELIVERY_TERMINAL_STATUSES = {
     "acked",
     "completed",
     "failed",
     "submit_unconfirmed",
+    "timeout",
 }
 
 # Optional LLM-based status analysis
@@ -61,20 +65,27 @@ class WatchState:
     target: str
     baseline: str
     done_marker: str
+    created_at: str = ""
+    updated_at: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return {
             "target": self.target,
             "baseline": self.baseline,
             "done_marker": self.done_marker,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, str]) -> WatchState:
+    def from_dict(cls, payload: dict[str, str], *, message_id: str = "") -> WatchState:
+        created_at = str(payload.get("created_at", "")) or _message_id_created_at(message_id)
         return cls(
             target=str(payload["target"]),
             baseline=str(payload["baseline"]),
             done_marker=str(payload["done_marker"]),
+            created_at=created_at,
+            updated_at=str(payload.get("updated_at", "")) or created_at,
         )
 
 
@@ -278,6 +289,7 @@ class AgentTalkRelay:
         self.delivery_tickets: dict[str, DeliveryTicket] = self._load_delivery_tickets()
         self.health_states: dict[str, AgentHealthState] = {}
         self._auto_resume_fingerprints: dict[str, str] = {}
+        self._watch_scan_offset = 0
         # Initialize LLM analyzer if available and enabled in config
         self._llm_analyzer = None
         if _llm_available and config.llm.enabled:
@@ -312,7 +324,7 @@ class AgentTalkRelay:
             if not isinstance(payload, dict):
                 continue
             try:
-                loaded[str(message_id)] = WatchState.from_dict(payload)
+                loaded[str(message_id)] = WatchState.from_dict(payload, message_id=str(message_id))
             except (KeyError, TypeError, ValueError):
                 continue
         return loaded
@@ -482,7 +494,15 @@ class AgentTalkRelay:
             status=status,
         )
 
-    def run_once(self, *, context_counter: int = 0, config_path: Path | None = None) -> int:
+    def run_once(
+        self,
+        *,
+        context_counter: int = 0,
+        config_path: Path | None = None,
+        max_messages_per_tick: int = DEFAULT_MAX_MESSAGES_PER_TICK,
+        max_watches_per_tick: int = DEFAULT_MAX_WATCHES_PER_TICK,
+        watch_timeout_seconds: float = DEFAULT_WATCH_TIMEOUT_SECONDS,
+    ) -> int:
         if config_path is not None:
             self.reload_config_from_disk(config_path)
         # Heartbeat first so transient failures in any sub-step below cannot keep
@@ -490,18 +510,23 @@ class AgentTalkRelay:
         # cause the Hub to derive every agent on this machine as OFFLINE even when
         # the panes are healthy and producing work).
         self._safe_heartbeat()
-        for step in (
+        steps = (
             self.sync_once,
-            self.process_next_message_once,
+            lambda: self.process_pending_messages_once(limit=max_messages_per_tick),
             self.recover_delivery_tickets_once,
-            self.update_watches_once,
-        ):
+            lambda: self.update_watches_once(
+                max_watches=max_watches_per_tick,
+                timeout_seconds=watch_timeout_seconds,
+            ),
+        )
+        for step in steps:
+            step_name = getattr(step, "__name__", "relay_step")
             try:
                 step()
             except HubRequestError as exc:
-                logger.warning("AgentTalk relay Hub request failed in %s: %s", step.__name__, exc)
+                logger.warning("AgentTalk relay Hub request failed in %s: %s", step_name, exc)
             except Exception:
-                logger.exception("AgentTalk relay step %s failed; continuing", step.__name__)
+                logger.exception("AgentTalk relay step %s failed; continuing", step_name)
         # Sync context every 6 intervals (~30s at the default interval).
         context_counter += 1
         if context_counter >= 6:
@@ -528,6 +553,9 @@ class AgentTalkRelay:
         self,
         *,
         interval_seconds: float = 5.0,
+        max_messages_per_tick: int = DEFAULT_MAX_MESSAGES_PER_TICK,
+        max_watches_per_tick: int = DEFAULT_MAX_WATCHES_PER_TICK,
+        watch_timeout_seconds: float = DEFAULT_WATCH_TIMEOUT_SECONDS,
         max_iterations: int | None = None,
         config_path: Path | None = None,
     ) -> None:
@@ -535,13 +563,29 @@ class AgentTalkRelay:
         iterations = 0
         while max_iterations is None or iterations < max_iterations:
             try:
-                context_counter = self.run_once(context_counter=context_counter, config_path=config_path)
+                context_counter = self.run_once(
+                    context_counter=context_counter,
+                    config_path=config_path,
+                    max_messages_per_tick=max_messages_per_tick,
+                    max_watches_per_tick=max_watches_per_tick,
+                    watch_timeout_seconds=watch_timeout_seconds,
+                )
             except Exception:
                 logger.exception("AgentTalk relay loop failed; retrying")
             iterations += 1
             if max_iterations is not None and iterations >= max_iterations:
                 break
             time.sleep(interval_seconds)
+
+    def process_pending_messages_once(self, *, limit: int = DEFAULT_MAX_MESSAGES_PER_TICK) -> int:
+        processed = 0
+        if limit <= 0:
+            return processed
+        for _ in range(limit):
+            if not self.process_next_message_once():
+                break
+            processed += 1
+        return processed
 
     def process_next_message_once(self) -> bool:
         message = self.hub_client.next_message(self.config.machine_id)
@@ -593,6 +637,8 @@ class AgentTalkRelay:
             target=binding.tmux_target,
             baseline=baseline,
             done_marker=message["done_marker"],
+            created_at=_now_utc(),
+            updated_at=_now_utc(),
         )
         self._save_watch_states()
         self._save_delivery_ticket(
@@ -704,10 +750,16 @@ class AgentTalkRelay:
             recovered += 1
         return recovered
 
-    def update_watches_once(self) -> int:
+    def update_watches_once(
+        self,
+        *,
+        max_watches: int = DEFAULT_MAX_WATCHES_PER_TICK,
+        timeout_seconds: float = DEFAULT_WATCH_TIMEOUT_SECONDS,
+    ) -> int:
         completed: list[str] = []
         updates = 0
-        for message_id, state in list(self.watch_states.items()):
+        watch_items = self._watch_items_for_tick(max_watches)
+        for message_id, state in watch_items:
             try:
                 current_message = self.hub_client.get_message(message_id)
             except Exception:
@@ -718,6 +770,16 @@ class AgentTalkRelay:
                 MessageStatus.TIMEOUT.value,
             }:
                 completed.append(message_id)
+                continue
+            if _watch_state_expired(message_id, state, timeout_seconds):
+                error = f"AgentTalk watch timed out after {int(timeout_seconds)}s"
+                try:
+                    self.hub_client.update_message_status(message_id, MessageStatus.TIMEOUT, error=error)
+                except Exception:
+                    logger.exception("AgentTalk relay failed to mark stale watch %s timeout", message_id)
+                self._mark_delivery_ticket(message_id, "timeout", error)
+                completed.append(message_id)
+                updates += 1
                 continue
             try:
                 output = self.tmux_client.capture_output(state.target, lines=800)
@@ -757,6 +819,7 @@ class AgentTalkRelay:
             #      injected prompt into the visible buffer twice but the agent
             #      never actually replied.
             done, response_text = _evaluate_done_marker(response_delta, state.done_marker)
+            state.updated_at = _now_utc()
             self.hub_client.update_message_response(message_id, response_text, completed=done)
             if done:
                 self._mark_delivery_ticket(message_id, "completed")
@@ -776,6 +839,23 @@ class AgentTalkRelay:
         if completed:
             self._save_watch_states()
         return updates
+
+    def _watch_items_for_tick(self, max_watches: int) -> list[tuple[str, WatchState]]:
+        items = list(self.watch_states.items())
+        if not items:
+            self._watch_scan_offset = 0
+            return []
+        if max_watches <= 0 or max_watches >= len(items):
+            self._watch_scan_offset = 0
+            return items
+        start = self._watch_scan_offset % len(items)
+        end = start + max_watches
+        if end <= len(items):
+            selected = items[start:end]
+        else:
+            selected = items[start:] + items[: end - len(items)]
+        self._watch_scan_offset = end % len(items)
+        return selected
 
     def _maybe_auto_resume_on_capacity(self, *, resume_key: str, target: str, observed_output: str) -> bool:
         if not detect_auto_resume_capacity(observed_output):
@@ -845,6 +925,27 @@ def default_watch_state_path() -> Path:
 
 def _now_utc() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _message_id_created_at(message_id: str) -> str:
+    match = re.search(r"msg-(\d{14})", message_id)
+    if match is None:
+        return ""
+    try:
+        created = datetime.strptime(match.group(1), "%Y%m%d%H%M%S").replace(tzinfo=UTC)
+    except ValueError:
+        return ""
+    return created.isoformat().replace("+00:00", "Z")
+
+
+def _watch_state_expired(message_id: str, state: WatchState, timeout_seconds: float) -> bool:
+    if timeout_seconds <= 0:
+        return False
+    created_at = state.created_at or _message_id_created_at(message_id)
+    if not created_at:
+        return False
+    created_ts = _parse_utc_timestamp(created_at)
+    return created_ts > 0 and time.time() - created_ts > timeout_seconds
 
 
 def _safe_message_id(message_id: str) -> str:

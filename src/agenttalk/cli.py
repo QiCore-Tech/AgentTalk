@@ -19,7 +19,12 @@ from agenttalk.hub.client import HubClient
 from agenttalk.hub.app import create_app
 from agenttalk.hub.models import MessageStatus, ReceiveMode
 from agenttalk.hub.settings import HubSettings, default_database_path
-from agenttalk.relay import AgentTalkRelay
+from agenttalk.relay import (
+    DEFAULT_MAX_MESSAGES_PER_TICK,
+    DEFAULT_MAX_WATCHES_PER_TICK,
+    DEFAULT_WATCH_TIMEOUT_SECONDS,
+    AgentTalkRelay,
+)
 from agenttalk.process_manager import get_process_manager
 
 
@@ -110,7 +115,14 @@ def _stop_daemon_process(pid: int) -> None:
             pass
 
 
-def _start_daemon_supervisor(*, config_path: Path | None, interval: float) -> int:
+def _start_daemon_supervisor(
+    *,
+    config_path: Path | None,
+    interval: float,
+    max_messages_per_tick: int,
+    max_watches_per_tick: int,
+    watch_timeout: float,
+) -> int:
     pid_path = default_daemon_pid_path()
     existing_pid = _read_pid(pid_path)
     if _pid_alive(existing_pid):
@@ -131,6 +143,12 @@ def _start_daemon_supervisor(*, config_path: Path | None, interval: float) -> in
         "supervise",
         "--interval",
         str(interval),
+        "--max-messages-per-tick",
+        str(max_messages_per_tick),
+        "--max-watches-per-tick",
+        str(max_watches_per_tick),
+        "--watch-timeout",
+        str(watch_timeout),
     ]
     if config_path is not None:
         cmd.extend(["--config-path", str(config_path)])
@@ -825,7 +843,19 @@ def config_auto_resume(
 @daemon_app.command("start")
 def daemon_start(
     config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
-    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 5.0,
+    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 1.0,
+    max_messages_per_tick: Annotated[
+        int,
+        typer.Option(help="Maximum pending messages to pull from the Hub per relay tick."),
+    ] = DEFAULT_MAX_MESSAGES_PER_TICK,
+    max_watches_per_tick: Annotated[
+        int,
+        typer.Option(help="Maximum active message watches to scan per relay tick."),
+    ] = DEFAULT_MAX_WATCHES_PER_TICK,
+    watch_timeout: Annotated[
+        float,
+        typer.Option(help="Seconds before a non-completed local watch is timed out. Use 0 to disable."),
+    ] = DEFAULT_WATCH_TIMEOUT_SECONDS,
     once: Annotated[bool, typer.Option(help="Run one sync and exit.")] = False,
 ) -> None:
     config = load_config(config_path)
@@ -866,19 +896,49 @@ def daemon_start(
     reverse_tunnel.start_background()
     typer.echo("Reverse tunnel client started")
 
-    relay.run_forever(interval_seconds=interval, config_path=config_path or default_config_path())
+    relay.run_forever(
+        interval_seconds=interval,
+        max_messages_per_tick=max_messages_per_tick,
+        max_watches_per_tick=max_watches_per_tick,
+        watch_timeout_seconds=watch_timeout,
+        config_path=config_path or default_config_path(),
+    )
 
 
 @daemon_app.command("supervise", hidden=True)
 def daemon_supervise(
     config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
-    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 5.0,
+    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 1.0,
+    max_messages_per_tick: Annotated[
+        int,
+        typer.Option(help="Maximum pending messages to pull from the Hub per relay tick."),
+    ] = DEFAULT_MAX_MESSAGES_PER_TICK,
+    max_watches_per_tick: Annotated[
+        int,
+        typer.Option(help="Maximum active message watches to scan per relay tick."),
+    ] = DEFAULT_MAX_WATCHES_PER_TICK,
+    watch_timeout: Annotated[
+        float,
+        typer.Option(help="Seconds before a non-completed local watch is timed out. Use 0 to disable."),
+    ] = DEFAULT_WATCH_TIMEOUT_SECONDS,
     restart_delay: Annotated[float, typer.Option(help="Restart delay seconds.")] = 2.0,
 ) -> None:
     stop_path = default_daemon_stop_path()
     log_path = default_daemon_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [_agenttalk_executable(), "daemon", "start", "--interval", str(interval)]
+    cmd = [
+        _agenttalk_executable(),
+        "daemon",
+        "start",
+        "--interval",
+        str(interval),
+        "--max-messages-per-tick",
+        str(max_messages_per_tick),
+        "--max-watches-per-tick",
+        str(max_watches_per_tick),
+        "--watch-timeout",
+        str(watch_timeout),
+    ]
     if config_path is not None:
         cmd.extend(["--config-path", str(config_path)])
     while not stop_path.exists():
@@ -940,7 +1000,19 @@ def daemon_stop() -> None:
 @daemon_app.command("restart")
 def daemon_restart(
     config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
-    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 5.0,
+    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 1.0,
+    max_messages_per_tick: Annotated[
+        int,
+        typer.Option(help="Maximum pending messages to pull from the Hub per relay tick."),
+    ] = DEFAULT_MAX_MESSAGES_PER_TICK,
+    max_watches_per_tick: Annotated[
+        int,
+        typer.Option(help="Maximum active message watches to scan per relay tick."),
+    ] = DEFAULT_MAX_WATCHES_PER_TICK,
+    watch_timeout: Annotated[
+        float,
+        typer.Option(help="Seconds before a non-completed local watch is timed out. Use 0 to disable."),
+    ] = DEFAULT_WATCH_TIMEOUT_SECONDS,
 ) -> None:
     pid = _read_pid()
     if _pid_alive(pid):
@@ -950,7 +1022,13 @@ def daemon_restart(
         if unmanaged_pid != pid:
             _stop_daemon_process(unmanaged_pid)
     default_daemon_pid_path().unlink(missing_ok=True)
-    new_pid = _start_daemon_supervisor(config_path=config_path, interval=interval)
+    new_pid = _start_daemon_supervisor(
+        config_path=config_path,
+        interval=interval,
+        max_messages_per_tick=max_messages_per_tick,
+        max_watches_per_tick=max_watches_per_tick,
+        watch_timeout=watch_timeout,
+    )
     typer.echo(f"Started AgentTalk daemon supervisor: pid={new_pid}")
     typer.echo(f"log: {default_daemon_log_path()}")
 
@@ -958,9 +1036,27 @@ def daemon_restart(
 @daemon_app.command("install")
 def daemon_install(
     config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
-    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 5.0,
+    interval: Annotated[float, typer.Option(help="Heartbeat interval seconds.")] = 1.0,
+    max_messages_per_tick: Annotated[
+        int,
+        typer.Option(help="Maximum pending messages to pull from the Hub per relay tick."),
+    ] = DEFAULT_MAX_MESSAGES_PER_TICK,
+    max_watches_per_tick: Annotated[
+        int,
+        typer.Option(help="Maximum active message watches to scan per relay tick."),
+    ] = DEFAULT_MAX_WATCHES_PER_TICK,
+    watch_timeout: Annotated[
+        float,
+        typer.Option(help="Seconds before a non-completed local watch is timed out. Use 0 to disable."),
+    ] = DEFAULT_WATCH_TIMEOUT_SECONDS,
 ) -> None:
-    pid = _start_daemon_supervisor(config_path=config_path, interval=interval)
+    pid = _start_daemon_supervisor(
+        config_path=config_path,
+        interval=interval,
+        max_messages_per_tick=max_messages_per_tick,
+        max_watches_per_tick=max_watches_per_tick,
+        watch_timeout=watch_timeout,
+    )
     typer.echo(f"AgentTalk daemon supervisor installed/running: pid={pid}")
     typer.echo(f"log: {default_daemon_log_path()}")
 

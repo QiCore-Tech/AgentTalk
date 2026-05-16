@@ -130,6 +130,10 @@ Hub connection handling:
 
 Local relay recovery:
 
+- `agenttalk daemon start` defaults to a 1 second loop interval for low-latency local delivery.
+- Each relay tick can pull multiple pending messages from the Hub. The default is `--max-messages-per-tick 10`.
+- Pending watches are scanned in bounded batches. The default is `--max-watches-per-tick 25`, which prevents old watches from monopolizing a tick.
+- Non-completed local watches time out after 12 hours by default. Use `--watch-timeout 0` to disable this.
 - `agenttalk daemon start` reloads the local config file on each loop, so newly registered or renamed local agents can re-register and heartbeat without waiting for a daemon restart.
 - Pending watch state is persisted in `~/.agenttalk/watch_states.json` by default. Override with `AGENTTALK_WATCH_STATE_PATH` for tests or isolated deployments.
 - A restarted relay can reload pending watch entries and continue looking for the completion marker before sending the final response back to the Hub.

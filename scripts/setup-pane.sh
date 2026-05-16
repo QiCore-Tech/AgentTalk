@@ -181,7 +181,7 @@ start_relay() {
 
     # 启动新的 relay
     cd "$REPO_DIR"
-    nohup bash -c "cd $REPO_DIR && uv run --no-sync agenttalk daemon start --interval 5.0" > /tmp/agenttalk-daemon.log 2>&1 &
+    nohup bash -c "cd $REPO_DIR && uv run --no-sync agenttalk daemon start --interval 1.0" > /tmp/agenttalk-daemon.log 2>&1 &
     local relay_pid=$!
 
     sleep 3

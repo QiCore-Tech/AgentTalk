@@ -74,6 +74,14 @@ agenttalk daemon restart
 agenttalk doctor
 ```
 
+The managed daemon defaults to a 1 second polling interval, pulls up to 10
+pending messages per tick, scans up to 25 active watches per tick, and times out
+non-completed local watches after 12 hours. Override these with:
+
+```bash
+agenttalk daemon restart --interval 1 --max-messages-per-tick 10 --max-watches-per-tick 25 --watch-timeout 43200
+```
+
 If a message cannot be confirmed as submitted, the relay records it in the local dead-letter queue:
 
 ```bash

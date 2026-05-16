@@ -109,7 +109,7 @@ start_monitoring() {
     fi
 
     # 启动新的 daemon
-    nohup bash -c "cd $REPO_DIR && uv run --no-sync agenttalk daemon start --interval 5.0" > /tmp/agenttalk-daemon.log 2>&1 &
+    nohup bash -c "cd $REPO_DIR && uv run --no-sync agenttalk daemon start --interval 1.0" > /tmp/agenttalk-daemon.log 2>&1 &
     local daemon_pid=$!
     sleep 3
 

@@ -465,6 +465,65 @@ def test_relay_process_next_message_injects_auto_submit() -> None:
     assert fake_hub.status_updates == [("msg-1", MessageStatus.SUBMITTED, "")]
 
 
+def test_relay_processes_multiple_pending_messages_per_tick() -> None:
+    class QueueHubClient(FakeHubClient):
+        def __init__(self, payloads: list[dict]) -> None:
+            super().__init__()
+            self.payloads = payloads
+
+        def next_message(self, _machine_id: str) -> dict | None:
+            if not self.payloads:
+                return None
+            return self.payloads.pop(0)
+
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[
+            AgentBinding(
+                short_id="alice-codex-api",
+                owner="alice",
+                kind="codex",
+                workspace="/workspace/api",
+                tmux_target="dev:0.1",
+                pane_id="%1",
+                receive_mode=ReceiveMode.AUTO_SUBMIT,
+            )
+        ],
+    )
+    fake_hub = QueueHubClient(
+        [
+            {
+                "message_id": "msg-1",
+                "sender": "bob",
+                "target": "alice-codex-api",
+                "body": "First.",
+                "done_marker": "<<<AGENTTALK_DONE:msg-1>>>",
+            },
+            {
+                "message_id": "msg-2",
+                "sender": "bob",
+                "target": "alice-codex-api",
+                "body": "Second.",
+                "done_marker": "<<<AGENTTALK_DONE:msg-2>>>",
+            },
+        ]
+    )
+    tmux = RecordingTmuxClient([])
+
+    processed = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux).process_pending_messages_once(limit=10)
+
+    assert processed == 2
+    assert [item[0] for item in tmux.injections] == ["dev:0.1", "dev:0.1"]
+    assert fake_hub.status_updates == [
+        ("msg-1", MessageStatus.SUBMITTED, ""),
+        ("msg-2", MessageStatus.SUBMITTED, ""),
+    ]
+
+
 def test_relay_process_next_message_creates_delivery_ticket(tmp_path) -> None:
     config = AgentTalkConfig(
         hub_url="http://hub.local:8787",
@@ -770,6 +829,39 @@ def test_relay_process_next_message_spools_long_body(monkeypatch, tmp_path) -> N
     assert len(spool_files) == 1
     assert body in spool_files[0].read_text(encoding="utf-8")
     assert fake_hub.status_updates == [("msg-long", MessageStatus.SUBMITTED, "")]
+
+
+def test_relay_times_out_stale_watch_state() -> None:
+    config = AgentTalkConfig(
+        hub_url="http://hub.local:8787",
+        token="token",
+        machine_id="machine-a",
+        host_name="host-a",
+        user_name="alice",
+        agents=[],
+    )
+    fake_hub = FakeHubClient()
+    tmux = RecordingTmuxClient([])
+    relay = AgentTalkRelay(config, hub_client=fake_hub, tmux_client=tmux)
+    relay.watch_states["msg-20000101000000000000"] = WatchState(
+        target="dev:0.1",
+        baseline="before\n",
+        done_marker="<<<AGENTTALK_DONE:msg-20000101000000000000>>>",
+        created_at="2000-01-01T00:00:00Z",
+    )
+
+    updates = relay.update_watches_once(timeout_seconds=1)
+
+    assert updates == 1
+    assert "msg-20000101000000000000" not in relay.watch_states
+    assert fake_hub.status_updates == [
+        (
+            "msg-20000101000000000000",
+            MessageStatus.TIMEOUT,
+            "AgentTalk watch timed out after 1s",
+        )
+    ]
+    assert tmux.injections == []
 
 
 def test_relay_process_next_message_respects_paste_only() -> None:

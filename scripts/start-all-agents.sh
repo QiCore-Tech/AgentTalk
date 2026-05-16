@@ -110,7 +110,7 @@ start_daemon() {
     > "$DAEMON_LOG"
 
     # 启动 daemon
-    nohup bash -c "cd $REPO_DIR && uv run --no-sync agenttalk daemon start --interval 5.0" > "$DAEMON_LOG" 2>&1 &
+    nohup bash -c "cd $REPO_DIR && uv run --no-sync agenttalk daemon start --interval 1.0" > "$DAEMON_LOG" 2>&1 &
     local daemon_pid=$!
 
     # 等待启动
