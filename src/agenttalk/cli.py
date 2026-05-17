@@ -225,6 +225,10 @@ def serve_hub(
     feishu_enable: Annotated[bool, typer.Option(help="Enable Feishu long-connection bot.")] = False,
     feishu_app_id: Annotated[str, typer.Option(help="Feishu app id.")] = "",
     feishu_app_secret: Annotated[str, typer.Option(help="Feishu app secret.")] = "",
+    auto_resume_cooldown: Annotated[
+        float,
+        typer.Option(help="Minimum seconds between Hub auto-resume writes for the same pause output."),
+    ] = 120.0,
 ) -> None:
     env_feishu_enable = os.environ.get("FEISHU_ENABLE", "").lower() in {"1", "true", "yes", "on"}
     resolved_feishu_enable = feishu_enable or env_feishu_enable
@@ -242,6 +246,7 @@ def serve_hub(
         feishu_app_id=resolved_feishu_app_id,
         feishu_app_secret=resolved_feishu_app_secret,
         feishu_alert_chat_id=os.environ.get("FEISHU_ALERT_CHAT_ID", ""),
+        auto_resume_cooldown_seconds=auto_resume_cooldown,
     )
     uvicorn.run(create_app(settings), host=host, port=port, loop="asyncio")
 

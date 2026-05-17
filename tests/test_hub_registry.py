@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from agenttalk.config import default_lan_ip
+import agenttalk.hub.app as hub_app_module
 from agenttalk.hub.app import create_app
 from agenttalk.hub.settings import HubSettings
 
@@ -118,6 +119,80 @@ def test_get_agent_detail(tmp_path: Path) -> None:
     upsert_agent(client, "alice-codex-api")
 
     response = client.get("/api/agents/alice-codex-api", headers=auth())
+
+    assert response.status_code == 200
+
+
+def test_hub_auto_resume_stops_after_agent_is_working(monkeypatch, tmp_path: Path) -> None:
+    class FakeSession:
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+
+        def write(self, data: str) -> None:
+            self.writes.append(data)
+
+    class FakePtyManager:
+        def __init__(self) -> None:
+            self.session = FakeSession()
+
+        def get_or_create(self, _short_id: str, _tmux_target: str) -> FakeSession:
+            return self.session
+
+    fake_pty = FakePtyManager()
+    monkeypatch.setattr(hub_app_module, "pty_manager", fake_pty)
+    client = make_client(tmp_path)
+    register_relay(client)
+    upsert_agent(client, "alice-codex-api")
+    client.post("/api/config/llm", headers=auth(), json={"enabled": True})
+
+    payload = {
+        "short_id": "alice-codex-api",
+        "pane_alive": True,
+        "process_alive": True,
+        "recent_output": "Selected model is at capacity",
+        "output_fingerprint": "pause-fp",
+        "detected_errors": [],
+        "detected_pauses": ["selected model is at capacity"],
+        "status": "idle",
+    }
+
+    first = client.post("/api/agents/alice-codex-api/health", headers=auth(), json=payload)
+    second = client.post("/api/agents/alice-codex-api/health", headers=auth(), json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert fake_pty.session.writes == ["继续\n"]
+
+
+def test_hub_auto_resume_does_not_fire_for_working_report(monkeypatch, tmp_path: Path) -> None:
+    class FakePtyManager:
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+
+        def get_or_create(self, _short_id: str, _tmux_target: str):
+            raise AssertionError("working reports must not trigger Hub auto-resume")
+
+    fake_pty = FakePtyManager()
+    monkeypatch.setattr(hub_app_module, "pty_manager", fake_pty)
+    client = make_client(tmp_path)
+    register_relay(client)
+    upsert_agent(client, "alice-codex-api")
+    client.post("/api/config/llm", headers=auth(), json={"enabled": True})
+
+    response = client.post(
+        "/api/agents/alice-codex-api/health",
+        headers=auth(),
+        json={
+            "short_id": "alice-codex-api",
+            "pane_alive": True,
+            "process_alive": True,
+            "recent_output": "Selected model is at capacity",
+            "output_fingerprint": "pause-fp",
+            "detected_errors": [],
+            "detected_pauses": ["selected model is at capacity"],
+            "status": "working",
+        },
+    )
 
     assert response.status_code == 200
     assert response.json()["short_id"] == "alice-codex-api"

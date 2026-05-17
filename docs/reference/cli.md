@@ -127,6 +127,7 @@ Hub connection handling:
 - Safe Hub write-back requests from the local relay retry transient `502/503/504` responses. Direct message creation is not retried by default, to avoid duplicate messages.
 - Response read failures are not retried, because the Hub may already have processed the request.
 - If a command still fails, retry the command or inspect existing work with `agenttalk status`, `agenttalk response`, and `agenttalk context`.
+- Hub-side auto-resume has a per-agent cooldown. The default is `--auto-resume-cooldown 120`, and Hub auto-resume does not write `继续` when the agent is already reported as `working`.
 
 Local relay recovery:
 

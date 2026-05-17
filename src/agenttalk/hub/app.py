@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -42,12 +43,15 @@ from agenttalk.feishu.worker import FeishuEventHandler, FeishuLongConnectionWork
 logger = logging.getLogger(__name__)
 
 
+AUTO_RESUME_ACTIVE_STATUSES = {AgentStatus.WORKING, AgentStatus.CRASHED, AgentStatus.ERROR}
+
 
 def create_app(settings: HubSettings) -> FastAPI:
     store = HubStore(
         settings.database_path,
         heartbeat_ttl_seconds=settings.heartbeat_ttl_seconds,
     )
+    auto_resume_recent: dict[str, tuple[str, float]] = {}
 
     feishu_messenger: LarkMessenger | None = None
     feishu_service: FeishuAgentTalkService | None = None
@@ -404,19 +408,31 @@ def create_app(settings: HubSettings) -> FastAPI:
             hub_store.create_alert(short_id, alert_type, alert_msg)
             maybe_alert_feishu(short_id, alert_type, alert_msg, agent.owner)
         
-        # Auto-resume: only works when LLM monitoring is enabled and per-agent config allows it
+        # Auto-resume: only works when LLM monitoring is enabled and per-agent config allows it.
+        # Do not keep sending the resume text once the agent is already marked
+        # working, and throttle identical pause output so stale terminal text
+        # cannot create a resume loop.
         llm_enabled = hub_store.get_config("llm.enabled") == "1"
         agent_auto_resume_enabled, agent_auto_resume_message = hub_store.get_agent_auto_resume(short_id)
-        if llm_enabled and agent_auto_resume_enabled and report.detected_pauses:
-            # Only auto-resume if not already in error/crashed state
-            if report.status not in (AgentStatus.CRASHED, AgentStatus.ERROR):
-                try:
-                    session = pty_manager.get_or_create(short_id, agent.tmux_target)
-                    session.write(agent_auto_resume_message + "\n")
-                    # Also update agent status to working
-                    hub_store.update_agent_status(short_id, AgentStatus.WORKING)
-                except Exception:
-                    pass  # Fail silently if auto-resume fails
+        if not report.detected_pauses:
+            auto_resume_recent.pop(short_id, None)
+        if _should_hub_auto_resume(
+            short_id=short_id,
+            report=report,
+            previous_status=previous_status,
+            llm_enabled=llm_enabled,
+            agent_auto_resume_enabled=agent_auto_resume_enabled,
+            recent=auto_resume_recent,
+            cooldown_seconds=settings.auto_resume_cooldown_seconds,
+        ):
+            try:
+                session = pty_manager.get_or_create(short_id, agent.tmux_target)
+                session.write(agent_auto_resume_message + "\n")
+                auto_resume_recent[short_id] = (_auto_resume_pause_fingerprint(report), time.monotonic())
+                # Also update agent status to working
+                hub_store.update_agent_status(short_id, AgentStatus.WORKING)
+            except Exception:
+                pass  # Fail silently if auto-resume fails
         
         return updated
 
@@ -650,4 +666,30 @@ def create_app(settings: HubSettings) -> FastAPI:
 
     return app
 
-    return app
+
+def _auto_resume_pause_fingerprint(report: AgentHealthReport) -> str:
+    return report.output_fingerprint or "|".join(sorted(report.detected_pauses))
+
+
+def _should_hub_auto_resume(
+    *,
+    short_id: str,
+    report: AgentHealthReport,
+    previous_status: AgentStatus,
+    llm_enabled: bool,
+    agent_auto_resume_enabled: bool,
+    recent: dict[str, tuple[str, float]],
+    cooldown_seconds: float,
+) -> bool:
+    if not llm_enabled or not agent_auto_resume_enabled or not report.detected_pauses:
+        return False
+    if previous_status in AUTO_RESUME_ACTIVE_STATUSES or report.status in AUTO_RESUME_ACTIVE_STATUSES:
+        return False
+    fingerprint = _auto_resume_pause_fingerprint(report)
+    last = recent.get(short_id)
+    if last is None:
+        return True
+    last_fingerprint, last_sent_at = last
+    if last_fingerprint != fingerprint:
+        return True
+    return cooldown_seconds <= 0 or time.monotonic() - last_sent_at >= cooldown_seconds

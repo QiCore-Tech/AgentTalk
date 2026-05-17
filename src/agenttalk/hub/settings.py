@@ -15,6 +15,7 @@ class HubSettings:
     feishu_app_id: str = ""
     feishu_app_secret: str = ""
     feishu_alert_chat_id: str = ""
+    auto_resume_cooldown_seconds: float = 120.0
 
 
 def default_database_path() -> Path:
