@@ -4,10 +4,10 @@
 
 set -euo pipefail
 
-HUB_URL="https://agents.qicore.tech"
-LOCAL_URL="http://localhost:8787"
-TOKEN="91055c408ac256920908b5bd9a6856fc9cd6498611faba95"
-TEST_AGENT="test-e2e-agent"
+HUB_URL="${HUB_URL:-https://agents.qicore.tech}"
+LOCAL_URL="${LOCAL_URL:-http://localhost:8787}"
+TOKEN="${TOKEN:-91055c408ac256920908b5bd9a6856fc9cd6498611faba95}"
+TEST_AGENT="${TEST_AGENT:-test-e2e-agent}"
 TEST_RESULTS="/tmp/agenttalk-test-results.txt"
 
 # Colors
@@ -98,6 +98,11 @@ fi
 # 3. Message Delivery
 # ============================================
 info "=== 3. Message Delivery ==="
+
+# Ensure agent is online before sending message
+curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"short_id":"'$TEST_AGENT'","status":"idle","pane_alive":true,"process_alive":true,"detected_errors":[],"output_fingerprint":"e2e-'$(date +%s)'"}' \
+    "$LOCAL_URL/api/agents/$TEST_AGENT/health" > /dev/null 2>&1 || true
 
 # Create message via API
 MSG_RESPONSE=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -222,9 +227,72 @@ else
 fi
 
 # ============================================
-# 8. Feishu Integration
+# 8. Machine Management & Instruction System
 # ============================================
-info "=== 8. Feishu Integration ==="
+info "=== 8. Machine Management & Instruction System ==="
+
+# Clean up any existing hub-registered test agent
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" "$LOCAL_URL/api/agents/test-e2e-hub-agent" > /dev/null 2>&1 || true
+
+# Get machine list
+if curl -sf -H "Authorization: Bearer $TOKEN" "$LOCAL_URL/api/machines" | grep -q '"machines"'; then
+    pass "List machines API"
+else
+    fail "List machines API"
+fi
+
+# Register agent via Hub instruction API
+TEST_HUB_AGENT="test-e2e-hub-agent"
+REGISTER_RESPONSE=$(curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"short_id":"'$TEST_HUB_AGENT'","machine_id":"qicore:qicore","kind":"codex","workspace":"/tmp","tmux_target":"agenttalk-e2e-hub","receive_mode":"auto_submit"}' \
+    "$LOCAL_URL/api/agents/register" 2>&1)
+
+if echo "$REGISTER_RESPONSE" | grep -q '"status":"queued"'; then
+    pass "Register agent via Hub API (instruction queued)"
+    INSTRUCTION_ID=$(echo "$REGISTER_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['instruction_id'])" 2>/dev/null || echo "")
+else
+    fail "Register agent via Hub API"
+    INSTRUCTION_ID=""
+fi
+
+# Run relay daemon to process the instruction (creates agent)
+# Create a temporary config pointing to the test Hub
+TMP_CONFIG=$(mktemp)
+cat > "$TMP_CONFIG" <<EOF
+{
+  "agents": [],
+  "host_name": "$(hostname)",
+  "hub_url": "$LOCAL_URL",
+  "lan_ip": "127.0.0.1",
+  "llm": {"api_key": "", "enabled": false, "model": "gpt-4o-mini"},
+  "machine_id": "qicore:qicore",
+  "token": "$TOKEN",
+  "user_name": "$(whoami)"
+}
+EOF
+RELAY_OUTPUT=$(uv run agenttalk daemon start --once --config-path "$TMP_CONFIG" 2>/dev/null || true)
+rm -f "$TMP_CONFIG"
+if echo "$RELAY_OUTPUT" | grep -q "Synced"; then
+    pass "Relay processes instruction"
+else
+    fail "Relay processes instruction"
+fi
+
+# Verify agent was created
+sleep 2
+if curl -sf -H "Authorization: Bearer $TOKEN" "$LOCAL_URL/api/agents/$TEST_HUB_AGENT" | grep -q "$TEST_HUB_AGENT"; then
+    pass "Hub-registered agent exists on Hub"
+else
+    fail "Hub-registered agent exists on Hub"
+fi
+
+# Cleanup hub-registered agent
+curl -sf -X DELETE -H "Authorization: Bearer $TOKEN" "$LOCAL_URL/api/agents/$TEST_HUB_AGENT" > /dev/null 2>&1 || true
+
+# ============================================
+# 9. Feishu Integration
+# ============================================
+info "=== 9. Feishu Integration ==="
 
 # Check Feishu is running
 FEISHU_LOG=$(docker logs agenttalk-hub 2>&1; echo "exit:$?")
@@ -234,8 +302,43 @@ else
     pass "Feishu WebSocket (log check skipped)"
 fi
 
+# Test Feishu commands
+uv run python -c "
+from agenttalk.feishu.commands import parse_command, FeishuCommandKind
+# Test /machines command
+cmd = parse_command('/machines')
+assert cmd.kind == FeishuCommandKind.MACHINES, f'Expected MACHINES, got {cmd.kind}'
+print('MACHINES command: OK')
+
+# Test /register command
+cmd = parse_command('/register test-agent qicore:qicore codex /tmp session auto_submit')
+assert cmd.kind == FeishuCommandKind.REGISTER, f'Expected REGISTER, got {cmd.kind}'
+assert cmd.args[0] == 'test-agent'
+assert cmd.args[1] == 'qicore:qicore'
+assert cmd.args[2] == 'codex'
+print('REGISTER command: OK')
+
+# Test group bot restriction (simulated)
+from agenttalk.feishu.service import FeishuAgentTalkService, FeishuOperator
+from agenttalk.hub.store import HubStore
+from pathlib import Path
+store = HubStore(Path('/tmp/test-feishu.db'))
+service = FeishuAgentTalkService(store)
+
+# Group chat should not allow /register
+reply = service.handle(parse_command('/register test qicore:qicore codex'), FeishuOperator(chat_id='group123', open_id=''))
+assert '不支持注册' in str(reply.content) or 'not allowed' in str(reply.content).lower() or '群机器人' in str(reply.content), f'Expected restriction message, got: {reply.content}'
+print('Group bot restriction: OK')
+
+# Personal bot should allow /register (but machine not found)
+reply = service.handle(parse_command('/register test qicore:qicore codex'), FeishuOperator(open_id='user123'))
+assert 'Machine not found' in str(reply.content) or 'not found' in str(reply.content).lower(), f'Expected not found, got: {reply.content}'
+print('Personal bot register attempt: OK')
+print('ALL_FEISHU_COMMANDS_OK')
+" 2>&1 | grep -q "ALL_FEISHU_COMMANDS_OK" && pass "Feishu commands parsing" || fail "Feishu commands parsing"
+
 # Test alert sending
-docker exec agenttalk-hub /app/.venv/bin/python -c "
+uv run python -c "
 from agenttalk.feishu.worker import LarkMessenger
 from agenttalk.feishu.render import alert_card
 messenger = LarkMessenger('cli_a976a6e0f2781bb3', 'l3D3lfJ1cTFMIqtCGa7eacnwP4j2S4T4')
@@ -248,9 +351,9 @@ except Exception as e:
 " 2>&1 | grep -q "OK" && pass "Feishu alert send" || fail "Feishu alert send"
 
 # ============================================
-# 9. CLI Commands
+# 10. CLI Commands
 # ============================================
-info "=== 9. CLI Commands ==="
+info "=== 10. CLI Commands ==="
 
 if uv run agenttalk list 2>&1 | grep -q "$TEST_AGENT"; then
     pass "CLI list agents"
@@ -271,9 +374,9 @@ else
 fi
 
 # ============================================
-# 10. Cleanup
+# 11. Cleanup
 # ============================================
-info "=== 10. Cleanup ==="
+info "=== 11. Cleanup ==="
 
 # Delete test agent
 uv run agenttalk unregister "$TEST_AGENT" 2>/dev/null || true

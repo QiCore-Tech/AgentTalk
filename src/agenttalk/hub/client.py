@@ -175,3 +175,35 @@ class HubClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def next_instruction(self, machine_id: str) -> dict | None:
+        response = request(
+            "GET",
+            f"{self.hub_url}/api/relays/{machine_id}/instructions/next",
+            headers=self.headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        return response.json()["instruction"]
+
+    def complete_instruction(self, instruction_id: int, result: str = "") -> None:
+        response = request(
+            "POST",
+            f"{self.hub_url}/api/instructions/{instruction_id}/complete",
+            headers=self.headers,
+            json={"result": result},
+            timeout=10,
+            retry_statuses=SAFE_POST_RETRY_STATUSES,
+        )
+        response.raise_for_status()
+
+    def fail_instruction(self, instruction_id: int, error: str = "") -> None:
+        response = request(
+            "POST",
+            f"{self.hub_url}/api/instructions/{instruction_id}/fail",
+            headers=self.headers,
+            json={"error": error},
+            timeout=10,
+            retry_statuses=SAFE_POST_RETRY_STATUSES,
+        )
+        response.raise_for_status()

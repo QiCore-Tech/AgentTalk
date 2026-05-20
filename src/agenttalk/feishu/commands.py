@@ -14,6 +14,8 @@ class FeishuCommandKind(StrEnum):
     RESPONSE = "response"
     TRACE = "trace"
     GUIDE = "guide"
+    MACHINES = "machines"
+    REGISTER = "register"
     UNKNOWN = "unknown"
 
 
@@ -63,4 +65,16 @@ def parse_command(text: str) -> FeishuCommand:
         return FeishuCommand(FeishuCommandKind.TRACE, rest, raw)
     if name == "guide":
         return FeishuCommand(FeishuCommandKind.GUIDE, rest, raw)
+    if name == "machines":
+        return FeishuCommand(FeishuCommandKind.MACHINES, rest, raw)
+    if name == "register":
+        register_parts = raw.split()
+        if len(register_parts) < 4:
+            return FeishuCommand(
+                FeishuCommandKind.REGISTER,
+                tuple(register_parts[1:]),
+                raw,
+                "Usage: /register <short_id> <machine_id> <kind> [workspace] [tmux_target] [receive_mode]",
+            )
+        return FeishuCommand(FeishuCommandKind.REGISTER, tuple(register_parts[1:]), raw)
     return FeishuCommand(FeishuCommandKind.UNKNOWN, rest, raw, f"Unknown command: {parts[0]}")

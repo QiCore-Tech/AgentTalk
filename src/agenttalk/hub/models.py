@@ -178,3 +178,47 @@ class AgentContextResponse(BaseModel):
     short_id: str
     context: str
     updated_at: str | None = None
+
+
+class InstructionCreateRequest(BaseModel):
+    machine_id: str = Field(min_length=1, max_length=120)
+    type: str = Field(min_length=1, max_length=80)
+    payload: dict = Field(default_factory=dict)
+
+
+class InstructionResponse(BaseModel):
+    id: int
+    machine_id: str
+    type: str
+    payload: dict
+    status: str
+    result: str | None = None
+    created_at: str
+    executed_at: str | None = None
+
+
+class AgentRegisterRequest(BaseModel):
+    """Request to register a new agent via Web UI or Feishu."""
+    short_id: str = Field(min_length=1, max_length=120)
+    machine_id: str = Field(min_length=1, max_length=120)
+    kind: str = Field(min_length=1, max_length=80)
+    workspace: str = Field(default="", max_length=1000)
+    tmux_target: str = Field(min_length=1, max_length=160)
+    receive_mode: ReceiveMode = ReceiveMode.AUTO_SUBMIT
+
+
+class MachineResponse(BaseModel):
+    """A machine record."""
+    machine_id: str
+    owner: str
+    visibility: str
+    hostname: str | None = None
+    ip: str | None = None
+    description: str | None = None
+    heartbeat_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class MachineListResponse(BaseModel):
+    machines: list[MachineResponse]

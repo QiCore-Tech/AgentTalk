@@ -143,6 +143,19 @@ class HubStore:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                -- Instructions for relays (Hub -> Relay control)
+                CREATE TABLE IF NOT EXISTS instructions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    machine_id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    result TEXT,
+                    created_at TEXT NOT NULL,
+                    executed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_instructions_machine_status ON instructions(machine_id, status);
                 """
             )
             # Migrate existing databases: add auto_resume columns if missing
@@ -664,3 +677,133 @@ class HubStore:
                 "INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
             )
+
+    # ==================== Instructions (Hub -> Relay control) ====================
+
+    def create_instruction(self, machine_id: str, type: str, payload: dict) -> dict:
+        """Create a new instruction for a relay machine."""
+        now = format_time(utc_now())
+        import json
+        payload_json = json.dumps(payload)
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO instructions (machine_id, type, payload, status, created_at)
+                VALUES (?, ?, ?, 'pending', ?)
+                """,
+                (machine_id, type, payload_json, now),
+            )
+            return {
+                "id": cursor.lastrowid,
+                "machine_id": machine_id,
+                "type": type,
+                "payload": payload,
+                "status": "pending",
+                "created_at": now,
+            }
+
+    def get_next_instruction(self, machine_id: str) -> dict | None:
+        """Get the next pending instruction for a machine and mark it as executing."""
+        now = format_time(utc_now())
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, machine_id, type, payload, status, created_at
+                FROM instructions
+                WHERE machine_id = ? AND status = 'pending'
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (machine_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            # Mark as executing
+            conn.execute(
+                "UPDATE instructions SET status = 'executing', executed_at = ? WHERE id = ?",
+                (now, row["id"]),
+            )
+            import json
+            return {
+                "id": row["id"],
+                "machine_id": str(row["machine_id"]),
+                "type": str(row["type"]),
+                "payload": json.loads(row["payload"]),
+                "status": "executing",
+                "created_at": str(row["created_at"]),
+            }
+
+    def complete_instruction(self, instruction_id: int, result: str) -> bool:
+        """Mark an instruction as completed with result."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE instructions SET status = 'completed', result = ? WHERE id = ?",
+                (result, instruction_id),
+            )
+        return cursor.rowcount > 0
+
+    def fail_instruction(self, instruction_id: int, error: str) -> bool:
+        """Mark an instruction as failed with error."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "UPDATE instructions SET status = 'failed', result = ? WHERE id = ?",
+                (error, instruction_id),
+            )
+        return cursor.rowcount > 0
+
+    def list_machines(self) -> list[dict]:
+        """List all machines with their status."""
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM relays ORDER BY last_seen_at DESC").fetchall()
+            machines = []
+            for row in rows:
+                machine = {
+                    "machine_id": str(row["machine_id"]),
+                    "host_name": str(row["host_name"]),
+                    "user_name": str(row["user_name"]),
+                    "lan_ip": str(row["lan_ip"]) if row["lan_ip"] else "",
+                    "last_seen_at": str(row["last_seen_at"]),
+                    "status": "online",
+                }
+                try:
+                    machine_row = conn.execute(
+                        "SELECT * FROM machines WHERE relay_machine_id = ?",
+                        (row["machine_id"],),
+                    ).fetchone()
+                    if machine_row:
+                        machine["id"] = machine_row["id"]
+                        machine["user_id"] = str(machine_row["user_id"])
+                        machine["name"] = str(machine_row["name"])
+                        machine["visibility"] = str(machine_row["visibility"]) if machine_row["visibility"] else "private"
+                        machine["relay_machine_id"] = str(machine_row["relay_machine_id"])
+                    else:
+                        machine["id"] = 0
+                        machine["user_id"] = ""
+                        machine["name"] = str(row["machine_id"])
+                        machine["visibility"] = "private"
+                        machine["relay_machine_id"] = str(row["machine_id"])
+                except Exception:
+                    machine["id"] = 0
+                    machine["user_id"] = ""
+                    machine["name"] = str(row["machine_id"])
+                    machine["visibility"] = "private"
+                    machine["relay_machine_id"] = str(row["machine_id"])
+                machines.append(machine)
+            return machines
+
+    def update_machine_visibility(self, machine_id: str, visibility: str) -> bool:
+        """Update machine visibility (private/public)."""
+        with self.connect() as conn:
+            # Try to update existing machines row
+            cursor = conn.execute(
+                "UPDATE machines SET visibility = ? WHERE relay_machine_id = ?",
+                (visibility, machine_id),
+            )
+            if cursor.rowcount > 0:
+                return True
+            # If no machines row exists, create one
+            conn.execute(
+                "INSERT OR IGNORE INTO machines (relay_machine_id, name, visibility) VALUES (?, ?, ?)",
+                (machine_id, machine_id, visibility),
+            )
+            return True

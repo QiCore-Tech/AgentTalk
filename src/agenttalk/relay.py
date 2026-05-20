@@ -378,7 +378,79 @@ class AgentTalkRelay:
     def _delivery_ticket_path(self, message_id: str) -> Path:
         return self.delivery_ticket_dir / f"{_safe_message_id(message_id)}.json"
 
+    def _process_instructions(self) -> None:
+        """Check for and execute pending instructions from Hub."""
+        try:
+            instruction = self.hub_client.next_instruction(self.config.machine_id)
+        except Exception:
+            return
+        if instruction is None:
+            return
+        instruction_id = instruction["id"]
+        instruction_type = instruction["type"]
+        payload = instruction["payload"]
+        logger.info(f"Processing instruction {instruction_id}: {instruction_type}")
+        if instruction_type == "register_agent":
+            self._handle_register_agent_instruction(instruction_id, payload)
+        else:
+            logger.warning(f"Unknown instruction type: {instruction_type}")
+            try:
+                self.hub_client.fail_instruction(instruction_id, f"Unknown type: {instruction_type}")
+            except Exception:
+                pass
+
+    def _handle_register_agent_instruction(self, instruction_id: int, payload: dict) -> None:
+        """Handle register_agent instruction from Hub."""
+        from agenttalk.config import AgentBinding
+        short_id = payload.get("short_id", "")
+        kind = payload.get("kind", "unknown")
+        workspace = payload.get("workspace", "")
+        tmux_target = payload.get("tmux_target", "")
+        receive_mode_str = payload.get("receive_mode", "auto_submit")
+        try:
+            existing = next((a for a in self.config.agents if a.short_id == short_id), None)
+            if existing:
+                self.hub_client.complete_instruction(instruction_id, f"Agent {short_id} already registered")
+                return
+            try:
+                self.tmux_client.capture_output(tmux_target, lines=1)
+            except Exception:
+                try:
+                    import subprocess
+                    session_name = tmux_target.split(":")[0] if ":" in tmux_target else tmux_target
+                    subprocess.run(["tmux", "has-session", "-t", session_name], capture_output=True, check=True)
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    try:
+                        session_name = tmux_target.split(":")[0] if ":" in tmux_target else tmux_target
+                        subprocess.run(["tmux", "new-session", "-d", "-s", session_name], capture_output=True, check=True)
+                        logger.info(f"Created tmux session: {session_name}")
+                    except Exception as exc:
+                        self.hub_client.fail_instruction(instruction_id, f"Failed to create tmux session: {exc}")
+                        return
+            receive_mode = ReceiveMode.AUTO_SUBMIT if receive_mode_str == "auto_submit" else ReceiveMode.PASTE_ONLY
+            binding = AgentBinding(
+                short_id=short_id,
+                owner=payload.get("owner", self.config.user_name),
+                kind=kind,
+                workspace=workspace,
+                tmux_target=tmux_target,
+                receive_mode=receive_mode,
+            )
+            self.config.agents.append(binding)
+            from agenttalk.config import save_config
+            save_config(self.config)
+            self.hub_client.upsert_agent(self.config, binding, AgentStatus.IDLE)
+            logger.info(f"Successfully registered agent {short_id} via instruction")
+            self.hub_client.complete_instruction(instruction_id, f"Agent {short_id} registered successfully")
+        except Exception as exc:
+            logger.exception(f"Failed to register agent {short_id}")
+            try:
+                self.hub_client.fail_instruction(instruction_id, str(exc))
+            except Exception:
+                pass
+
     def sync_once(self) -> RelaySyncResult:
+        self._process_instructions()
         self.hub_client.register_relay(self.config)
         panes = self.tmux_client.list_processes()
         pane_targets = {pane.target: pane for pane in panes}
@@ -588,6 +660,7 @@ class AgentTalkRelay:
         return processed
 
     def process_next_message_once(self) -> bool:
+        self._process_instructions()
         message = self.hub_client.next_message(self.config.machine_id)
         if message is None:
             return False

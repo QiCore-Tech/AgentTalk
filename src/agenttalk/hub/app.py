@@ -20,10 +20,14 @@ from agenttalk.hub.models import (
     AgentAlertCreateResponse,
     AgentHealthReport,
     AgentListResponse,
+    AgentRegisterRequest,
     AgentStatus,
+    MachineListResponse,
+    MachineResponse,
     AgentUpsertRequest,
     ErrorResponse,
     HealthResponse,
+    InstructionResponse,
     MessageCreateRequest,
     MessageResponseUpdateRequest,
     MessageStatusUpdateRequest,
@@ -331,6 +335,39 @@ def create_app(settings: HubSettings) -> FastAPI:
             raise api_error(404, "relay_not_found", f"Relay not found: {request.machine_id}")
         return relay
 
+    @app.post(
+        "/api/agents/register",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    )
+    def register_agent_via_hub(
+        request: AgentRegisterRequest,
+        hub_store: HubStore = Depends(get_store),
+    ):
+        """Register a new agent via Hub. Creates an instruction for the relay to execute."""
+        machine = hub_store.get_relay(request.machine_id)
+        if not machine:
+            raise api_error(404, "machine_not_found", f"Machine not found: {request.machine_id}")
+        existing = hub_store.get_agent(request.short_id)
+        if existing:
+            raise api_error(409, "agent_exists", f"Agent already exists: {request.short_id}")
+        instruction = hub_store.create_instruction(
+            machine_id=request.machine_id,
+            type="register_agent",
+            payload={
+                "short_id": request.short_id,
+                "kind": request.kind,
+                "workspace": request.workspace,
+                "tmux_target": request.tmux_target,
+                "receive_mode": request.receive_mode.value,
+            },
+        )
+        return {
+            "instruction_id": instruction["id"],
+            "status": "queued",
+            "message": f"Registration instruction queued for relay {request.machine_id}",
+        }
+
     @app.put(
         "/api/agents",
         dependencies=[Depends(require_token)],
@@ -356,6 +393,46 @@ def create_app(settings: HubSettings) -> FastAPI:
     ) -> AgentListResponse:
         agents = hub_store.list_agents(AgentFilters(owner=owner, machine_id=machine_id, status=status))
         return AgentListResponse(agents=agents)
+
+    @app.get(
+        "/api/machines",
+        response_model=MachineListResponse,
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}},
+    )
+    def list_machines(hub_store: HubStore = Depends(get_store)) -> MachineListResponse:
+        machines = hub_store.list_machines()
+        result = []
+        for m in machines:
+            result.append(
+                MachineResponse(
+                    machine_id=m.get("relay_machine_id") or m.get("machine_id", ""),
+                    owner=m.get("user_name", "") or m.get("user_id", ""),
+                    visibility=m.get("visibility", "private"),
+                    hostname=m.get("host_name"),
+                    ip=m.get("lan_ip"),
+                    description=m.get("name"),
+                    heartbeat_at=m.get("last_seen_at"),
+                    created_at=None,
+                    updated_at=None,
+                )
+            )
+        return MachineListResponse(machines=result)
+
+    @app.patch(
+        "/api/machines/{machine_id}",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def update_machine_visibility(
+        machine_id: str,
+        visibility: str = "private",
+        hub_store: HubStore = Depends(get_store),
+    ):
+        if visibility not in ("private", "public"):
+            raise api_error(400, "invalid_visibility", "Visibility must be 'private' or 'public'")
+        hub_store.update_machine_visibility(machine_id, visibility)
+        return {"machine_id": machine_id, "visibility": visibility}
 
     @app.get(
         "/api/agents/{short_id}",
@@ -560,6 +637,52 @@ def create_app(settings: HubSettings) -> FastAPI:
         if response is None:
             raise api_error(404, "message_not_found", f"Message not found: {message_id}")
         return response
+
+    # ==================== Instruction APIs ====================
+
+    @app.get(
+        "/api/relays/{machine_id}/instructions/next",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}},
+    )
+    def next_instruction(machine_id: str, hub_store: HubStore = Depends(get_store)):
+        """Relay polls for next pending instruction."""
+        instruction = hub_store.get_next_instruction(machine_id)
+        if instruction is None:
+            return {"instruction": None}
+        return {"instruction": InstructionResponse(**instruction)}
+
+    @app.post(
+        "/api/instructions/{instruction_id}/complete",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def complete_instruction(
+        instruction_id: int,
+        request: dict,
+        hub_store: HubStore = Depends(get_store),
+    ):
+        """Relay marks instruction as completed."""
+        result = request.get("result", "")
+        if hub_store.complete_instruction(instruction_id, result):
+            return {"completed": True, "instruction_id": instruction_id}
+        raise api_error(404, "instruction_not_found", f"Instruction not found: {instruction_id}")
+
+    @app.post(
+        "/api/instructions/{instruction_id}/fail",
+        dependencies=[Depends(require_token)],
+        responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def fail_instruction(
+        instruction_id: int,
+        request: dict,
+        hub_store: HubStore = Depends(get_store),
+    ):
+        """Relay marks instruction as failed."""
+        error = request.get("error", "")
+        if hub_store.fail_instruction(instruction_id, error):
+            return {"failed": True, "instruction_id": instruction_id}
+        raise api_error(404, "instruction_not_found", f"Instruction not found: {instruction_id}")
 
     @app.get(
         "/api/agents/{short_id}/context",

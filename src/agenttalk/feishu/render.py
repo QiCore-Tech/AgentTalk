@@ -50,6 +50,13 @@ def help_reply() -> FeishuReply:
                 "【可靠投递说明】",
                 "/guide reliability    # 查看 ACK、daemon、DLQ、doctor 说明",
                 "",
+                "【查看机器列表】",
+                "/machines             # 列出所有机器（群机器人只显示 public）",
+                "",
+                "【注册 Agent（仅个人机器人）】",
+                "/register <short_id> <machine_id> <kind> [workspace] [tmux_target] [receive_mode]",
+                "  例如：/register my-agent qicore:qicore codex /tmp my-session auto_submit",
+                "",
                 "【Web 控制台】",
                 "访问 Web UI 获取更完整的 agent 管理功能",
             ]
@@ -192,6 +199,47 @@ def message_trace_text(message: MessageResponse, response_text: str = "") -> Fei
     if response_text:
         lines.extend(["", "response preview:", "```", truncate(response_text, 1200), "```"])
     return text_reply("\n".join(lines))
+
+
+def machines_card(machines: list[dict], *, web_base_url: str = "") -> FeishuReply:
+    rows = []
+    for m in machines[:20]:
+        rows.append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"**{m.get('name', 'Unknown')}** · `{m.get('status', 'unknown')}`\n"
+                        f"Host: {m.get('host_name', 'unknown')} · ID: `{m.get('relay_machine_id', '')}`\n"
+                        f"Visibility: {m.get('visibility', 'private')}"
+                    ),
+                },
+            }
+        )
+    if not rows:
+        rows.append({"tag": "div", "text": {"tag": "plain_text", "content": "No machines found."}})
+    actions: list[dict[str, Any]] = []
+    if web_base_url:
+        actions.append(
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "Open Web"},
+                "type": "primary",
+                "url": web_base_url,
+            }
+        )
+    elements = rows
+    if actions:
+        elements.append({"tag": "action", "actions": actions})
+    return FeishuReply(
+        "interactive",
+        {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": "AgentTalk Machines"}},
+            "elements": elements,
+        },
+    )
 
 
 def alert_card(short_id: str, alert_type: str, message: str, *, web_base_url: str = "", owner: str = "") -> FeishuReply:
