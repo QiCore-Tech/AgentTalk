@@ -73,6 +73,10 @@ agenttalk status <message-id>
 agenttalk response <message-id>
 ```
 
+When `agenttalk send` runs inside a registered tmux pane, the CLI fills the
+sender from that pane's registered `short_id`. Agents normally do not need to
+pass `--sender`.
+
 Feishu equivalents:
 
 ```text

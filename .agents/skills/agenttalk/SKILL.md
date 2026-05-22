@@ -69,6 +69,10 @@ For normal peer collaboration:
 agenttalk send --to alice-codex-api --message "Please review the API contract in docs/plans/example.md."
 ```
 
+When this runs inside a registered tmux pane, AgentTalk automatically uses this
+agent's registered short ID as the sender. Only pass `--sender` when you need to
+override that inferred sender.
+
 For feedback you need to observe immediately, use `--watch`:
 
 ```bash

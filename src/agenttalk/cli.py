@@ -213,6 +213,44 @@ def _message_preview(body: str, *, limit: int = 120) -> str:
     return preview[: limit - 3].rstrip() + "..."
 
 
+def _current_tmux_pane_id() -> str:
+    return os.environ.get("TMUX_PANE", "").strip()
+
+
+def _current_tmux_target(pane_id: str) -> str:
+    if not pane_id:
+        return ""
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane_id, "#S:#I.#P"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _infer_sender_from_local_context(config) -> str:
+    pane_id = _current_tmux_pane_id()
+    if pane_id:
+        for binding in config.agents:
+            if binding.pane_id and binding.pane_id == pane_id:
+                return binding.short_id
+        tmux_target = _current_tmux_target(pane_id)
+        if tmux_target:
+            for binding in config.agents:
+                if binding.tmux_target == tmux_target:
+                    return binding.short_id
+    if len(config.agents) == 1:
+        return config.agents[0].short_id
+    return "cli"
+
+
 @hub_app.command("serve")
 def serve_hub(
     host: Annotated[str, typer.Option(help="Host to bind.")] = "127.0.0.1",
@@ -489,7 +527,10 @@ def mode(
 def send_message(
     to: Annotated[str, typer.Option(help="Target agent short ID.")],
     message: Annotated[str, typer.Option(help="Message body. Use '-' to read from stdin.")],
-    sender: Annotated[str, typer.Option(help="Sender label or agent short ID.")] = "cli",
+    sender: Annotated[
+        str | None,
+        typer.Option(help="Sender label or agent short ID. Defaults to the current registered tmux agent when available."),
+    ] = None,
     hub_url: Annotated[str, typer.Option(help="Hub base URL.")] = "http://127.0.0.1:8787",
     token: Annotated[str | None, typer.Option(help="Shared LAN bearer token.")] = None,
     config_path: Annotated[Path | None, typer.Option(help="AgentTalk config path.")] = None,
@@ -502,6 +543,7 @@ def send_message(
         raise typer.BadParameter("Token is required via --token, config, or AGENTTALK_TOKEN")
     resolved_hub_url = hub_url if hub_url != "http://127.0.0.1:8787" else config.hub_url
     message_body = _resolve_cli_body(message, field_name="Message body")
+    resolved_sender = sender or _infer_sender_from_local_context(config)
     # Issue 6: look up the target's receive_mode BEFORE creating the message so
     # the CLI surface tells the caller whether to expect auto_submit or
     # paste_only behaviour. This is best-effort; if the lookup fails we still
@@ -523,7 +565,7 @@ def send_message(
         "POST",
         f"{resolved_hub_url.rstrip('/')}/api/messages",
         headers=auth_headers(resolved_token),
-        json={"to": to, "body": message_body, "sender": sender},
+        json={"to": to, "body": message_body, "sender": resolved_sender},
         timeout=10,
     )
     if response.status_code >= 400:
@@ -531,6 +573,7 @@ def send_message(
         raise typer.Exit(1)
     payload = response.json()
     typer.echo(f"message: {payload['message_id']}")
+    typer.echo(f"from: {resolved_sender}")
     typer.echo(f"to: {payload['target']}")
     typer.echo(f"status: {payload['status']}")
     typer.echo(f"message preview: {_message_preview(message_body)}")

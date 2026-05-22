@@ -62,7 +62,6 @@ Send a point-to-point message:
 ```bash
 uv run agenttalk send \
   --to alice-codex-api \
-  --sender bob-claude-ui \
   --message "Please review the API contract."
 ```
 
@@ -71,10 +70,13 @@ Send and watch response:
 ```bash
 uv run agenttalk send \
   --to alice-codex-api \
-  --sender bob-claude-ui \
   --message "Please review the API contract." \
   --watch
 ```
+
+When `agenttalk send` runs inside a registered tmux pane, the CLI automatically
+uses that agent's `short_id` as the sender. Pass `--sender <id>` only when you
+need to override the inferred sender.
 
 Send a multi-line message from stdin:
 

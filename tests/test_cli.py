@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from agenttalk.config import load_config
+from agenttalk.config import AgentBinding, AgentTalkConfig, load_config, save_config
 from agenttalk import cli
 from agenttalk.cli import app
 
@@ -271,6 +271,160 @@ def test_send_reads_message_from_stdin(monkeypatch) -> None:
     }
     assert "msg-stdin" in result.output
     assert "message preview: line 1 line 2" in result.output
+
+
+def test_send_infers_sender_from_current_tmux_pane_id(monkeypatch, tmp_path) -> None:
+    runner = CliRunner()
+    calls: list[dict] = []
+    config_path = tmp_path / "config.json"
+    save_config(
+        AgentTalkConfig(
+            hub_url="http://hub.local:8787",
+            token="test-token",
+            agents=[
+                AgentBinding(
+                    short_id="codex-worker",
+                    owner="coder",
+                    kind="codex",
+                    workspace="/workspace/project",
+                    tmux_target="78:0.0",
+                    pane_id="%78",
+                ),
+                AgentBinding(
+                    short_id="codex-reviewer",
+                    owner="coder",
+                    kind="codex",
+                    workspace="/workspace/project",
+                    tmux_target="80:0.0",
+                    pane_id="%80",
+                ),
+            ],
+        ),
+        config_path,
+    )
+
+    class FakePostResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {
+                "message_id": "msg-inferred",
+                "target": "codex-reviewer",
+                "status": "sent",
+                "done_marker": "<<<AGENTTALK_DONE:msg-inferred>>>",
+            }
+
+    class FakeAgentLookupResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {
+                "short_id": "codex-reviewer",
+                "kind": "codex",
+                "receive_mode": "auto_submit",
+                "status": "idle",
+            }
+
+    def fake_hub_request(method, url, **kwargs):
+        calls.append({"method": method, "url": url, "json": kwargs.get("json")})
+        if method == "GET":
+            return FakeAgentLookupResponse()
+        if method == "POST":
+            return FakePostResponse()
+        raise AssertionError(f"unexpected method: {method} {url}")
+
+    monkeypatch.setenv("TMUX_PANE", "%78")
+    monkeypatch.setattr(cli, "hub_request", fake_hub_request)
+
+    result = runner.invoke(
+        app,
+        [
+            "send",
+            "--to",
+            "codex-reviewer",
+            "--message",
+            "Please review.",
+            "--config-path",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    post_call = next(call for call in calls if call["method"] == "POST")
+    assert post_call["json"]["sender"] == "codex-worker"
+    assert "from: codex-worker" in result.output
+
+
+def test_send_explicit_sender_overrides_inferred_sender(monkeypatch, tmp_path) -> None:
+    runner = CliRunner()
+    calls: list[dict] = []
+    config_path = tmp_path / "config.json"
+    save_config(
+        AgentTalkConfig(
+            hub_url="http://hub.local:8787",
+            token="test-token",
+            agents=[
+                AgentBinding(
+                    short_id="codex-worker",
+                    owner="coder",
+                    kind="codex",
+                    workspace="/workspace/project",
+                    tmux_target="78:0.0",
+                    pane_id="%78",
+                )
+            ],
+        ),
+        config_path,
+    )
+
+    class FakePostResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {
+                "message_id": "msg-explicit",
+                "target": "codex-reviewer",
+                "status": "sent",
+                "done_marker": "<<<AGENTTALK_DONE:msg-explicit>>>",
+            }
+
+    class FakeAgentLookupResponse:
+        status_code = 404
+        text = ""
+
+    def fake_hub_request(method, url, **kwargs):
+        calls.append({"method": method, "url": url, "json": kwargs.get("json")})
+        if method == "GET":
+            return FakeAgentLookupResponse()
+        if method == "POST":
+            return FakePostResponse()
+        raise AssertionError(f"unexpected method: {method} {url}")
+
+    monkeypatch.setenv("TMUX_PANE", "%78")
+    monkeypatch.setattr(cli, "hub_request", fake_hub_request)
+
+    result = runner.invoke(
+        app,
+        [
+            "send",
+            "--to",
+            "codex-reviewer",
+            "--message",
+            "Please review.",
+            "--sender",
+            "manual-sender",
+            "--config-path",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    post_call = next(call for call in calls if call["method"] == "POST")
+    assert post_call["json"]["sender"] == "manual-sender"
+    assert "from: manual-sender" in result.output
 
 
 def test_send_rejects_blank_message_before_hub_request(monkeypatch) -> None:
